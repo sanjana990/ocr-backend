@@ -131,15 +131,12 @@ alembic upgrade head
 
 ## Production Deployment
 
-### Docker
+### Railway Deployment
 
-```bash
-# Build image
-docker build -t visitor-intelligence-backend .
-
-# Run container
-docker run -p 8000:8000 visitor-intelligence-backend
-```
+1. Connect your GitHub repository to Railway
+2. Railway will automatically detect Python and install dependencies
+3. Set environment variables in Railway dashboard
+4. Deploy!
 
 ### Environment Variables
 
