@@ -22,10 +22,8 @@ backend/
 │   ├── models/              # Database models
 │   ├── schemas/             # Pydantic schemas
 │   ├── services/            # Business logic services
-│   └── tasks/               # Celery background tasks
 ├── requirements.txt         # Python dependencies
 ├── run.py                   # Development server
-├── run_celery.py           # Celery worker
 └── env.example             # Environment variables template
 ```
 
@@ -67,11 +65,6 @@ alembic upgrade head
 # Terminal 1: Start FastAPI server
 python run.py
 
-# Terminal 2: Start Celery worker
-python run_celery.py
-
-# Terminal 3: Start Redis (if not running)
-redis-server
 ```
 
 ### 5. Access API

@@ -103,8 +103,6 @@ python -c "
 try:
     import fastapi
     import sqlalchemy
-    import redis
-    import celery
     import opencv-python
     import pillow
     import tesseract
@@ -130,7 +128,6 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "🔧 Available commands:"
     echo "- python run.py          # Start FastAPI server"
-    echo "- python run_celery.py   # Start Celery worker"
     echo "- playwright install     # Install browser dependencies"
     echo ""
     echo "📚 Documentation:"
