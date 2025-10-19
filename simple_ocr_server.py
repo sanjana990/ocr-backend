@@ -112,7 +112,8 @@ app.add_middleware(
         "http://localhost:5173", 
         "http://localhost:5174",
         "http://localhost:8000",
-        "https://fe-ocr-fe1.vercel.app"
+        "https://fe-ocr-fe1.vercel.app",
+        "https://*.onrender.com"  # Allow all Render domains
     ],
     allow_credentials=True,
     allow_methods=["*"],
