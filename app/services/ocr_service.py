@@ -27,11 +27,6 @@ try:
 except ImportError:
     EASYOCR_AVAILABLE = False
 
-try:
-    from paddleocr import PaddleOCR
-    PADDLEOCR_AVAILABLE = True
-except ImportError:
-    PADDLEOCR_AVAILABLE = False
 
 # QR code detection will use OpenCV only
 
@@ -109,14 +104,6 @@ class OCRService:
             except Exception as e:
                 self.logger.warning("EasyOCR not available", error=str(e))
         
-        # PaddleOCR
-        if PADDLEOCR_AVAILABLE:
-            try:
-                self.paddle_ocr = PaddleOCR(use_textline_orientation=True, lang='en')
-                self.engines['paddleocr'] = True
-                self.logger.info("PaddleOCR initialized")
-            except Exception as e:
-                self.logger.warning("PaddleOCR not available", error=str(e))
         
         # QR Code scanning
         if OPENCV_QR_AVAILABLE:
@@ -212,18 +199,6 @@ class OCRService:
             except Exception as e:
                 self.logger.warning(f"❌ EasyOCR failed", error=str(e))
         
-        # Fallback to PaddleOCR if EasyOCR fails or gives poor results
-        if 'paddleocr' in self.engines and self.engines['paddleocr']:
-            self.logger.info("🔄 Trying PaddleOCR fallback")
-            try:
-                result = await self._process_with_engine(cv_image, 'paddleocr')
-                results.append(result)
-                self.logger.info(f"✅ PaddleOCR completed", 
-                               success=result.get('success'),
-                               confidence=result.get('confidence', 0),
-                               text_length=len(result.get('text', '')))
-            except Exception as e:
-                self.logger.warning(f"❌ PaddleOCR failed", error=str(e))
         
         # Final fallback to Tesseract if both fail
         if 'tesseract' in self.engines and self.engines['tesseract']:
@@ -242,8 +217,8 @@ class OCRService:
         self.logger.info("🔄 Trying all available engines (full mode)")
         results = []
         
-        # Try engines in order of preference: EasyOCR -> PaddleOCR -> Tesseract
-        preferred_order = ['easyocr', 'paddleocr', 'tesseract']
+        # Try engines in order of preference: EasyOCR -> Tesseract
+        preferred_order = ['easyocr', 'tesseract']
         
         for engine_name in preferred_order:
             if engine_name in self.engines and self.engines[engine_name]:
@@ -269,8 +244,6 @@ class OCRService:
             return await self._tesseract_ocr(cv_image)
         elif engine == 'easyocr' and self.engines.get('easyocr'):
             return await self._easyocr_process(cv_image)
-        elif engine == 'paddleocr' and self.engines.get('paddleocr'):
-            return await self._paddleocr_process(cv_image)
         else:
             raise ValueError(f"Engine {engine} not available")
     
@@ -363,58 +336,6 @@ class OCRService:
                 "engine": "easyocr"
             }
     
-    async def _paddleocr_process(self, cv_image) -> Dict[str, Any]:
-        """Process with PaddleOCR"""
-        self.logger.info("🔧 Processing with PaddleOCR")
-        try:
-            self.logger.info("🔍 Running PaddleOCR...")
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                self.executor,
-                self.paddle_ocr.ocr,
-                cv_image
-            )
-            
-            self.logger.info(f"📊 PaddleOCR found {len(results) if results else 0} result groups")
-            
-            # Extract text and confidence with better error handling
-            text_parts = []
-            confidences = []
-            
-            if results and results[0]:
-                for line in results[0]:
-                    if line and len(line) > 1 and len(line[1]) > 1:
-                        try:
-                            text_parts.append(line[1][0])
-                            confidences.append(line[1][1])
-                        except (IndexError, TypeError) as e:
-                            self.logger.warning("⚠️ Skipping malformed PaddleOCR result", error=str(e))
-                            continue
-            
-            full_text = ' '.join(text_parts)
-            avg_confidence = sum(confidences) / len(confidences) if confidences else 0
-            
-            self.logger.info("✅ PaddleOCR complete", 
-                           text_length=len(full_text),
-                           confidence=avg_confidence,
-                           lines=len(text_parts))
-            
-            return {
-                "success": True,
-                "text": full_text,
-                "confidence": avg_confidence,
-                "engine": "paddleocr",
-                "raw_data": results
-            }
-        except Exception as e:
-            self.logger.error("❌ PaddleOCR failed", error=str(e))
-            return {
-                "success": False,
-                "error": str(e),
-                "text": "",
-                "confidence": 0.0,
-                "engine": "paddleocr"
-            }
     
     async def scan_qr_codes(self, image_data: bytes) -> Dict[str, Any]:
         """Scan for QR codes in the image using enhanced detection"""
@@ -614,7 +535,6 @@ class OCRService:
         # Engine preference weights (higher = better)
         engine_weights = {
             'easyocr': 3.0,
-            'paddleocr': 2.5,
             'tesseract': 1.0
         }
         

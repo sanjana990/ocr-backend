@@ -102,15 +102,13 @@ echo "🧪 Testing installation..."
 python -c "
 try:
     import fastapi
-    import sqlalchemy
-    import opencv-python
+    import cv2
     import pillow
-    import tesseract
+    import pytesseract
     import easyocr
-    import paddleocr
     import playwright
     import scrapy
-    import beautifulsoup4
+    import bs4
     print('✅ All dependencies installed successfully')
 except ImportError as e:
     print(f'❌ Missing dependency: {e}')
@@ -123,7 +121,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "📋 Next steps:"
     echo "1. Edit .env file with your configuration"
-    echo "2. Set up PostgreSQL database"
+    echo "2. Configure your environment variables"
     echo "3. Run: python run.py"
     echo ""
     echo "🔧 Available commands:"

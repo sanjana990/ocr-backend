@@ -18,7 +18,7 @@ ocr_service = OCRService()
 @router.post("/process")
 async def process_image(
     file: UploadFile = File(...),
-    engine: str = Query("auto", description="OCR engine to use: auto, tesseract, easyocr, paddleocr")
+    engine: str = Query("auto", description="OCR engine to use: auto, tesseract, easyocr")
 ):
     """Process image with OCR"""
     try:
@@ -54,7 +54,7 @@ async def process_image(
 @router.post("/business-card")
 async def process_business_card(
     file: UploadFile = File(...),
-    engine: str = Query("auto", description="OCR engine to use: auto, tesseract, easyocr, paddleocr")
+    engine: str = Query("auto", description="OCR engine to use: auto, tesseract, easyocr")
 ):
     """Process business card image and extract structured data"""
     try:
