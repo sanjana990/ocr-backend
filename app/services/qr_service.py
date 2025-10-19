@@ -14,12 +14,7 @@ from typing import Dict, Any, List, Optional
 
 logger = structlog.get_logger(__name__)
 
-# Try to import pyzbar, but handle gracefully if not available
-try:
-    from pyzbar import pyzbar
-    PYZBAR_AVAILABLE = True
-except ImportError:
-    PYZBAR_AVAILABLE = False
+# QR code detection will use OpenCV only
 
 
 class QRService:
@@ -27,7 +22,7 @@ class QRService:
     
     def __init__(self):
         self.logger = logger
-        self.pyzbar_available = PYZBAR_AVAILABLE
+        self.pyzbar_available = False  # pyzbar removed
         
     def detect_qr_codes(self, image_data: bytes) -> list:
         """Detect QR codes in the image using multiple methods"""

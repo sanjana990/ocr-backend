@@ -25,14 +25,7 @@ from PIL import Image
 import io
 import pytesseract
 
-# Try to import pyzbar, but handle gracefully if not available
-try:
-    from pyzbar import pyzbar
-    PYZBAR_AVAILABLE = True
-    print("✅ pyzbar available - QR code detection enabled")
-except ImportError:
-    PYZBAR_AVAILABLE = False
-    print("⚠️ pyzbar not available - QR code detection will use OpenCV only")
+# QR code detection will use OpenCV only
 
 # Import the new OCR service
 from app.services.ocr_service import OCRService
@@ -41,7 +34,6 @@ from app.services.ocr_service import OCRService
 from app.services.qr_service import QRService
 from app.services.business_card_service import BusinessCardService
 from app.services.image_processing_service import ImageProcessingService
-from app.services.google_vision_service import google_vision_service
 
 # Import LinkedIn scraper
 try:
@@ -330,49 +322,6 @@ async def scan_qr_codes_goqr(
         raise HTTPException(status_code=500, detail=f"QR scan failed: {str(e)}")
 
 
-@app.post("/qr-scan-google")
-async def scan_qr_codes_google_vision(
-    file: UploadFile = File(...)
-):
-    """Scan QR codes using Google Vision API"""
-    try:
-        # Validate file type
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Read file content
-        content = await file.read()
-        
-        logger.info("🔍 Starting Google Vision API scan", 
-                   filename=file.filename, 
-                   file_size=len(content))
-        
-        # Check if Google Vision is available
-        if not google_vision_service.is_available():
-            logger.warning("Google Vision API not available")
-            return {
-                "success": False,
-                "filename": file.filename,
-                "qr_codes": [],
-                "count": 0,
-                "error": "Google Vision API not available. Please set up Google Cloud credentials."
-            }
-        
-        # Detect QR codes using Google Vision
-        qr_codes = await google_vision_service.detect_qr_codes(content)
-        
-        logger.info(f"✅ Google Vision found {len(qr_codes)} QR codes")
-        return {
-            "success": True,
-            "filename": file.filename,
-            "qr_codes": qr_codes,
-            "count": len(qr_codes),
-            "method": "Google Vision API"
-        }
-        
-    except Exception as e:
-        logger.error(f"Google Vision API scan failed: {e}")
-        raise HTTPException(status_code=500, detail=f"QR scan failed: {str(e)}")
 
 
 @app.post("/qr-scan")
@@ -615,7 +564,6 @@ async def debug_qr(file: UploadFile = File(...)):
         debug_info = {
             "file_size": len(content),
             "image_shape": cv_image.shape if cv_image is not None else None,
-            "pyzbar_available": PYZBAR_AVAILABLE,
             "opencv_available": True
         }
         

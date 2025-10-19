@@ -33,12 +33,7 @@ try:
 except ImportError:
     PADDLEOCR_AVAILABLE = False
 
-# QR Code imports
-try:
-    from pyzbar import pyzbar
-    PYZBAR_AVAILABLE = True
-except ImportError:
-    PYZBAR_AVAILABLE = False
+# QR code detection will use OpenCV only
 
 # OpenCV QR Code detector as fallback
 try:
@@ -124,13 +119,7 @@ class OCRService:
                 self.logger.warning("PaddleOCR not available", error=str(e))
         
         # QR Code scanning
-        if PYZBAR_AVAILABLE:
-            try:
-                self.engines['qr_scanner'] = True
-                self.logger.info("QR Code scanner (pyzbar) initialized")
-            except Exception as e:
-                self.logger.warning("QR Code scanner (pyzbar) not available", error=str(e))
-        elif OPENCV_QR_AVAILABLE:
+        if OPENCV_QR_AVAILABLE:
             try:
                 self.engines['qr_scanner'] = True
                 self.logger.info("QR Code scanner (OpenCV) initialized")
@@ -445,7 +434,7 @@ class OCRService:
                 self.logger.warning("⚠️ Enhanced QR detection failed, falling back", error=str(e))
         
         # Fallback to standard methods
-        if not PYZBAR_AVAILABLE and not OPENCV_QR_AVAILABLE:
+        if not OPENCV_QR_AVAILABLE:
             return {
                 "success": False,
                 "error": "QR code scanning not available (no QR libraries installed)",
@@ -468,7 +457,7 @@ class OCRService:
             
             all_qr_codes = []
             
-            if PYZBAR_AVAILABLE:
+            if False:  # pyzbar removed
                 # Use pyzbar for QR detection
                 self.logger.info("🔍 Using pyzbar for QR detection")
                 
