@@ -1112,20 +1112,24 @@ async def crawl_company(
                         # Use exact same format as crawling.py
                         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
                         
-                        # Use the exact same strategy as crawling.py
+                        # Enhanced strategy for structured JSON output
                         strategy = {
-                            "instruction":"""Extract the following company information:
-                            - Company name
-                            - Description/tagline
-                            - Products/services
-                            - Leadership team
-                            - Location/headquarters
-                            - Founding date
-                            - Industry
-                            - Revenue
-                            - Number of employees
-                            - Key People
-                            Return as JSON."""
+                            "instruction": """Extract the following company information and return as a valid JSON object with these exact keys:
+                            {
+                                "Company name": "string",
+                                "Description/tagline": "string", 
+                                "Products/services": "string",
+                                "Location/headquarters": "string",
+                                "Industry": "string",
+                                "Number of employees": "string"
+                            }
+                            
+                            Rules:
+                            - Return ONLY valid JSON, no additional text
+                            - Use "N/A" if information is not available
+                            - For products/services, provide a brief summary
+                            - For number of employees, use ranges like "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+"
+                            - Be concise but informative"""
                         }
                         
                         # Use exact same format as crawling.py
@@ -1134,24 +1138,68 @@ async def crawl_company(
                             contents=f"{strategy} {markdown_content}"
                         )
                         
-                        # Return just the AI response like crawling.py
-                        ai_response = response.text
+                        # Parse the AI response into structured JSON
+                        ai_response = response.text.strip()
                         
-                        extracted_data = {
-                            "raw_ai_response": ai_response,
-                            "extraction_successful": True
-                        }
-                        
-                        logger.info("✅ AI extraction completed")
+                        try:
+                            # Try to parse as JSON
+                            import json
+                            import re
+                            
+                            # Clean the response - remove markdown code blocks if present
+                            cleaned_response = ai_response
+                            if "```json" in cleaned_response:
+                                # Extract JSON from markdown code blocks
+                                json_match = re.search(r'```json\s*\n?(.*?)\n?```', cleaned_response, re.DOTALL)
+                                if json_match:
+                                    cleaned_response = json_match.group(1).strip()
+                            elif "```" in cleaned_response:
+                                # Handle generic code blocks
+                                json_match = re.search(r'```\s*\n?(.*?)\n?```', cleaned_response, re.DOTALL)
+                                if json_match:
+                                    cleaned_response = json_match.group(1).strip()
+                            
+                            parsed_data = json.loads(cleaned_response)
+                            
+                            # Validate and format the response
+                            formatted_data = {
+                                "Company name": parsed_data.get("Company name", "N/A"),
+                                "Description/tagline": parsed_data.get("Description/tagline", "N/A"),
+                                "Products/services": parsed_data.get("Products/services", "N/A"),
+                                "Location/headquarters": parsed_data.get("Location/headquarters", "N/A"),
+                                "Industry": parsed_data.get("Industry", "N/A"),
+                                "Number of employees": parsed_data.get("Number of employees", "N/A")
+                            }
+                            
+                            extracted_data = {
+                                "structured_data": formatted_data,
+                                "raw_ai_response": ai_response,
+                                "extraction_successful": True,
+                                "parsing_successful": True
+                            }
+                            
+                            logger.info("✅ AI extraction and JSON parsing completed")
+                            
+                        except json.JSONDecodeError as json_error:
+                            logger.warning(f"⚠️ Failed to parse AI response as JSON: {json_error}")
+                            # Fallback: return raw response with parsing error
+                            extracted_data = {
+                                "structured_data": None,
+                                "raw_ai_response": ai_response,
+                                "extraction_successful": True,
+                                "parsing_successful": False,
+                                "parsing_error": str(json_error)
+                            }
                         
                 except Exception as ai_error:
                     logger.error(f"❌ AI extraction failed: {ai_error}")
                     extracted_data = {
                         "error": str(ai_error),
-                        "extraction_successful": False
+                        "extraction_successful": False,
+                        "parsing_successful": False
                     }
             
-            # Prepare response (focus on AI extraction like crawling.py)
+            # Prepare response with structured company data
             response_data = {
                 "success": True,
                 "company_name": company_name,
@@ -1159,8 +1207,10 @@ async def crawl_company(
                 "platform": platform,
                 "crawl_time": elapsed,
                 "content_length": len(markdown_content),
-                "ai_response": extracted_data.get("raw_ai_response") if extracted_data else None,  # Focus on AI response like crawling.py
+                "company_data": extracted_data.get("structured_data") if extracted_data else None,  # This will be your formatted JSON
+                "raw_ai_response": extracted_data.get("raw_ai_response") if extracted_data else None,
                 "extraction_successful": extracted_data.get("extraction_successful", False) if extracted_data else False,
+                "parsing_successful": extracted_data.get("parsing_successful", False) if extracted_data else False,
                 "crawled_at": datetime.now().isoformat()
             }
             

@@ -58,7 +58,7 @@ browser_config = {
 
 rate_limiter = SimpleRateLimiter()
 
-gemini_key = os.environ["GEMINI_API_KEY"]
+gemini_key = os.environ["gemini_api_key"]
 
 class CompanyInfo: 
     def __init__(self):
@@ -78,17 +78,13 @@ strategy = {
     - Company name
     - Description/tagline
     - Products/services
-    - Leadership team
     - Location/headquarters
-    - Founding date
     - Industry
-    - Revenue
     - Number of employees
-    - Key People
     Return as JSON."""
 }
 
-company = "microsoft"
+company = "jiohotstar"
 
 async def main():
     await rate_limiter.wait_if_needed()
@@ -119,5 +115,4 @@ async def main():
 # Run the async main function
 res = asyncio.run(main())
 print(res)
-
 
