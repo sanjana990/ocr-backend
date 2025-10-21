@@ -88,15 +88,6 @@ except ImportError as e:
     print(f"⚠️ Web scraping service not available: {e}")
     print("Install with: pip install playwright")
 
-# Import LinkedIn scraper (fallback)
-try:
-    from linkedin_scraper import LinkedInScraperService
-    LINKEDIN_SCRAPER_AVAILABLE = True
-    print("✅ LinkedIn scraper available (fallback)")
-except ImportError as e:
-    LINKEDIN_SCRAPER_AVAILABLE = False
-    print(f"⚠️ LinkedIn scraper not available: {e}")
-    print("Install with: pip install scrapfly-sdk beautifulsoup4")
 
 # Setup logging
 structlog.configure(
@@ -200,7 +191,8 @@ app.add_middleware(
         "http://localhost:5174",
         "http://localhost:8000",
         "https://fe-ocr-fe1.vercel.app",
-        "https://*.onrender.com"  # Allow all Render domains
+        "https://*.onrender.com",  # Allow all Render domains
+        "https://projects-main-liard.vercel.app/"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -538,51 +530,6 @@ async def scan_qr_codes(
         }
 
 
-@app.post("/business-card-vision")
-async def process_business_card_vision(file: UploadFile = File(...)):
-    """Process business card using vision analysis only"""
-    try:
-        # Validate file type
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Read file content
-        content = await file.read()
-        
-        logger.info("🚀 Processing business card with vision analysis", 
-                   filename=file.filename, 
-                   file_size=len(content))
-        
-        # Process with vision-only analysis
-        result = await ocr_service.analyze_business_card_vision(content)
-        
-        logger.info("✅ Vision analysis completed", 
-                   filename=file.filename, 
-                   success=result["success"],
-                   confidence=result.get("confidence", 0),
-                   method=result.get("method", "unknown"))
-        
-        return {
-            "success": result["success"],
-            "filename": file.filename,
-            "structured_data": result.get("data", {}),
-            "confidence": result.get("confidence", 0.0),
-            "analysis_notes": result.get("analysis_notes", ""),
-            "quality_assessment": result.get("quality_assessment", {}),
-            "raw_analysis": result.get("raw_analysis", ""),
-            "method": result.get("method", "vision_only"),
-            "error": result.get("error")
-        }
-        
-    except Exception as e:
-        logger.error("❌ Vision analysis failed", err=str(e))
-        return {
-            "success": False,
-            "error": str(e),
-            "structured_data": {},
-            "confidence": 0.0
-        }
-
 
 @app.post("/batch-ocr")
 async def batch_ocr(files: List[UploadFile] = File(...)):
@@ -670,71 +617,6 @@ async def batch_ocr(files: List[UploadFile] = File(...)):
         }
 
 
-@app.post("/debug-qr")
-async def debug_qr(file: UploadFile = File(...)):
-    """Debug QR code detection with detailed information"""
-    try:
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        content = await file.read()
-        
-        # Test basic image decoding
-        nparr = np.frombuffer(content, np.uint8)
-        cv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        debug_info = {
-            "file_size": len(content),
-            "image_shape": cv_image.shape if cv_image is not None else None,
-            "opencv_available": True
-        }
-        
-        # Test QR detection
-        qr_codes = detect_qr_codes(content)
-        
-        return {
-            "success": True,
-            "debug_info": debug_info,
-            "qr_codes": qr_codes,
-            "qr_count": len(qr_codes)
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "debug_info": {"error": str(e)}
-        }
-
-@app.post("/debug-ocr")
-async def debug_ocr(file: UploadFile = File(...)):
-    """Debug OCR with detailed results"""
-    try:
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        content = await file.read()
-        image = Image.open(io.BytesIO(content))
-        cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        result = process_image_with_tesseract(image, cv_image)
-        
-        return {
-            "success": True,
-            "filename": file.filename,
-            "best_result": {
-                "text": result["best_text"],
-                "confidence": result["best_confidence"],
-                "method": result["best_method"]
-            },
-            "all_results": result["all_results"]
-        }
-        
-    except Exception as e:
-        logger.error("Debug OCR failed", err=str(e))
-        raise HTTPException(status_code=500, detail=f"Debug OCR failed: {str(e)}")
-
-
 @app.post("/extract-url-content")
 async def extract_url_content(request: dict):
     """Extract detailed information from a URL"""
@@ -761,142 +643,6 @@ async def extract_url_content(request: dict):
         logger.error(f"URL content extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
-
-@app.post("/search-company")
-async def search_company(
-    company_name: str = Query(..., description="Company name to search using Apollo.io")
-):
-    """Search company information using Apollo.io (replaces LinkedIn scraping)"""
-    try:
-        if not APOLLO_SERVICE_AVAILABLE:
-            # Fallback to LinkedIn scraping if Apollo.io is not available
-            if LINKEDIN_SCRAPER_AVAILABLE:
-                logger.info(f"Apollo.io not available, falling back to LinkedIn for: {company_name}")
-                scraper = LinkedInScraperService()
-                result = await scraper.scrape_company(company_name)
-            else:
-                raise HTTPException(
-                    status_code=503, 
-                    detail="Neither Apollo.io nor LinkedIn scraper available. Set APOLLO_API_KEY or install scrapfly-sdk"
-                )
-        else:
-            logger.info(f"Searching Apollo.io for company: {company_name}")
-            result = await apollo_service.search_company(company_name)
-        
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
-        
-        # Save to database if search was successful
-        try:
-            from database_service import database_service
-            
-            # Save to database
-            saved_company = await database_service.save_linkedin_company(result)
-            if saved_company:
-                logger.info(f"✅ Company data saved to database: {result.get('company_name')}")
-            else:
-                logger.warning(f"⚠️ Failed to save to database: {result.get('company_name')}")
-                
-        except Exception as db_error:
-            logger.warning(f"⚠️ Database save failed: {db_error}")
-            # Continue with response even if database save fails
-        
-        logger.info(f"✅ Company search completed for: {result.get('company_name', company_name)}")
-        
-        return {
-            "success": True,
-            "company_name": result.get("company_name"),
-            "website": result.get("website"),
-            "industry": result.get("industry"),
-            "size": result.get("size"),
-            "hq_location": result.get("hq_location"),
-            "company_type": result.get("company_type"),
-            "linkedin_url": result.get("linkedin_url"),
-            "twitter_url": result.get("twitter_url"),
-            "facebook_url": result.get("facebook_url"),
-            "description": result.get("description"),
-            "founded_year": result.get("founded_year"),
-            "revenue": result.get("revenue"),
-            "technologies": result.get("technologies", []),
-            "source": result.get("source", "unknown"),
-            "scraped_at": result.get("scraped_at")
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Company search failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Company search failed: {str(e)}")
-
-
-@app.post("/search-companies")
-async def search_companies(
-    company_names: List[str] = Query(..., description="List of company names to search using Apollo.io")
-):
-    """Search multiple companies using Apollo.io (replaces LinkedIn batch scraping)"""
-    try:
-        if not APOLLO_SERVICE_AVAILABLE:
-            # Fallback to LinkedIn scraping if Apollo.io is not available
-            if LINKEDIN_SCRAPER_AVAILABLE:
-                logger.info(f"Apollo.io not available, falling back to LinkedIn for {len(company_names)} companies")
-                scraper = LinkedInScraperService()
-                results = await scraper.scrape_multiple_companies(company_names)
-            else:
-                raise HTTPException(
-                    status_code=503, 
-                    detail="Neither Apollo.io nor LinkedIn scraper available. Set APOLLO_API_KEY or install scrapfly-sdk"
-                )
-        else:
-            logger.info(f"Searching Apollo.io for {len(company_names)} companies")
-            results = await apollo_service.search_multiple_companies(company_names)
-        
-        return {
-            "success": True,
-            "companies": results,
-            "total_searched": len(results),
-            "source": "apollo.io" if APOLLO_SERVICE_AVAILABLE else "linkedin",
-            "searched_at": results[0].get("scraped_at") if results else None
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Company batch search failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Company batch search failed: {str(e)}")
-
-
-@app.post("/search-company-contacts")
-async def search_company_contacts(
-    company_name: str = Query(..., description="Company name to search for contacts"),
-    limit: int = Query(10, description="Maximum number of contacts to return")
-):
-    """Search for contacts at a company using Apollo.io"""
-    try:
-        if not APOLLO_SERVICE_AVAILABLE:
-            raise HTTPException(
-                status_code=503, 
-                detail="Apollo.io service not available. Set APOLLO_API_KEY environment variable"
-            )
-        
-        logger.info(f"Searching Apollo.io for contacts at: {company_name}")
-        
-        # Search for contacts
-        contacts = await apollo_service.get_company_contacts(company_name, limit)
-        
-        return {
-            "success": True,
-            "company_name": company_name,
-            "contacts": contacts,
-            "total_contacts": len(contacts),
-            "source": "apollo.io",
-            "searched_at": datetime.now().isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Contact search failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Contact search failed: {str(e)}")
 
 
 @app.post("/comprehensive-business-card-analysis")
@@ -1052,8 +798,8 @@ async def crawl_company(
         if not company_name or not company_name.strip():
             raise HTTPException(status_code=400, detail="Company name is required")
         
-        # Clean company name
-        company_name = company_name.strip().lower().replace(" ", "")
+        # Clean company name for URL generation
+        company_name_clean = company_name.strip().lower()
         
         logger.info(f"🔍 Starting company crawl", 
                    company=company_name, 
@@ -1067,7 +813,18 @@ async def crawl_company(
         
         # Construct URL based on platform
         if platform.lower() == "linkedin":
-            url = f"https://www.linkedin.com/company/{company_name}/"
+            # Handle company names with spaces for LinkedIn URLs
+            if " " in company_name_clean:
+                # Try both formats: with hyphens and without spaces
+                company_name_hyphen = company_name_clean.replace(" ", "-")
+                company_name_no_spaces = company_name_clean.replace(" ", "")
+                
+                # Try hyphenated version first (more common on LinkedIn)
+                url = f"https://www.linkedin.com/company/{company_name_hyphen}/"
+                logger.info(f"🌐 Using hyphenated LinkedIn URL: {url}")
+            else:
+                url = f"https://www.linkedin.com/company/{company_name_clean}/"
+            
         elif platform.lower() == "website":
             # Try common website patterns
             url = f"https://www.{company_name}.com"

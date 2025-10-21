@@ -84,7 +84,7 @@ strategy = {
     Return as JSON."""
 }
 
-company = "jiohotstar"
+company = "tech mahindra"
 
 async def main():
     await rate_limiter.wait_if_needed()

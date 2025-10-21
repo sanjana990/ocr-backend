@@ -179,35 +179,53 @@ class OCRService:
         results = []
         
         # Try EasyOCR first (best for business cards)
+        easyocr_result = None
         if 'easyocr' in self.engines and self.engines['easyocr']:
             self.logger.info("🔧 Using EasyOCR (best for business cards)")
             try:
-                result = await self._process_with_engine(cv_image, 'easyocr')
-                results.append(result)
+                easyocr_result = await self._process_with_engine(cv_image, 'easyocr')
+                results.append(easyocr_result)
                 
-                # If EasyOCR gives good results, use it
-                if result.get('success') and result.get('confidence', 0) > 0.3:
+                # If EasyOCR gives good results, use it (lowered threshold for business cards)
+                if easyocr_result.get('success') and easyocr_result.get('confidence', 0) > 0.1:
                     self.logger.info(f"✅ EasyOCR success - stopping here", 
-                                   confidence=result.get('confidence', 0),
-                                   text_length=len(result.get('text', '')))
+                                   confidence=easyocr_result.get('confidence', 0),
+                                   text_length=len(easyocr_result.get('text', '')))
                     return results
                 
                 self.logger.info(f"✅ EasyOCR completed", 
-                               success=result.get('success'),
-                               confidence=result.get('confidence', 0),
-                               text_length=len(result.get('text', '')))
+                               success=easyocr_result.get('success'),
+                               confidence=easyocr_result.get('confidence', 0),
+                               text_length=len(easyocr_result.get('text', '')))
             except Exception as e:
                 self.logger.warning(f"❌ EasyOCR failed", error=str(e))
         
-        
-        # Final fallback to Tesseract if both fail
+        # Try Tesseract as fallback
+        tesseract_result = None
         if 'tesseract' in self.engines and self.engines['tesseract']:
-            self.logger.info("🔄 Final fallback to Tesseract")
+            self.logger.info("🔄 Trying Tesseract fallback")
             try:
-                result = await self._process_with_engine(cv_image, 'tesseract')
-                results.append(result)
+                tesseract_result = await self._process_with_engine(cv_image, 'tesseract')
+                results.append(tesseract_result)
             except Exception as e:
                 self.logger.warning(f"❌ Tesseract fallback failed", error=str(e))
+        
+        # Smart selection: compare results if both engines succeeded
+        if easyocr_result and tesseract_result and easyocr_result.get('success') and tesseract_result.get('success'):
+            easyocr_conf = easyocr_result.get('confidence', 0)
+            tesseract_conf = tesseract_result.get('confidence', 0)
+            
+            # If EasyOCR is close to Tesseract (within 20%), prefer EasyOCR
+            if easyocr_conf >= tesseract_conf * 0.8:
+                self.logger.info(f"🏆 Preferring EasyOCR over Tesseract", 
+                               easyocr_conf=easyocr_conf, tesseract_conf=tesseract_conf)
+                # Return EasyOCR result as the best
+                return [easyocr_result]
+            else:
+                self.logger.info(f"🏆 Preferring Tesseract over EasyOCR", 
+                               easyocr_conf=easyocr_conf, tesseract_conf=tesseract_conf)
+                # Return Tesseract result as the best
+                return [tesseract_result]
         
         self.logger.info(f"📊 Fast processing complete: {len(results)} results")
         return results
@@ -289,16 +307,18 @@ class OCRService:
             }
     
     async def _easyocr_process(self, cv_image) -> Dict[str, Any]:
-        """Process with EasyOCR - OPTIMIZED for speed"""
-        self.logger.info("🔧 Processing with EasyOCR (optimized)")
+        """Process with EasyOCR - OPTIMIZED for business cards"""
+        self.logger.info("🔧 Processing with EasyOCR (business card optimized)")
         try:
-            self.logger.info("🔍 Running EasyOCR with speed optimizations...")
+            # Preprocess image for better business card recognition
+            enhanced_image = self._preprocess_for_business_cards(cv_image)
+            self.logger.info("🔍 Running EasyOCR with business card optimizations...")
             loop = asyncio.get_event_loop()
-            # Use optimized parameters for speed
+            # Use enhanced parameters for business cards
             results = await loop.run_in_executor(
                 self.executor, 
                 self._easyocr_readtext_optimized, 
-                cv_image
+                enhanced_image
             )
             
             self.logger.info(f"📊 EasyOCR found {len(results)} text regions")
@@ -307,9 +327,17 @@ class OCRService:
             text_parts = []
             confidences = []
             
-            for (bbox, text, confidence) in results:
-                text_parts.append(text)
-                confidences.append(confidence)
+            for result in results:
+                if len(result) == 3:  # Standard format: (bbox, text, confidence)
+                    bbox, text, confidence = result
+                    text_parts.append(text)
+                    confidences.append(confidence)
+                elif len(result) == 2:  # Detail format: (bbox, text)
+                    bbox, text = result
+                    text_parts.append(text)
+                    confidences.append(0.5)  # Default confidence
+                else:
+                    self.logger.warning(f"Unexpected EasyOCR result format: {result}")
             
             full_text = ' '.join(text_parts)
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0
@@ -993,20 +1021,52 @@ class OCRService:
         
         return parsed
     
-    def _easyocr_readtext_optimized(self, cv_image):
-        """Optimized EasyOCR processing for speed"""
+    def _preprocess_for_business_cards(self, cv_image):
+        """Preprocess image for better business card recognition"""
         try:
-            # Use optimized parameters for faster processing
+            # Convert to grayscale for better text detection
+            if len(cv_image.shape) == 3:
+                gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = cv_image.copy()
+            
+            # Apply adaptive thresholding for better text contrast
+            thresh = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+            )
+            
+            # Apply morphological operations to clean up the image
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+            cleaned = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            
+            # Convert back to BGR for EasyOCR
+            enhanced = cv2.cvtColor(cleaned, cv2.COLOR_GRAY2BGR)
+            
+            self.logger.info("✅ Image preprocessed for business card recognition")
+            return enhanced
+            
+        except Exception as e:
+            self.logger.warning(f"Image preprocessing failed, using original: {e}")
+            return cv_image
+
+    def _easyocr_readtext_optimized(self, cv_image):
+        """Optimized EasyOCR processing for business cards"""
+        try:
+            # Enhanced parameters for better business card recognition
             results = self.easyocr_reader.readtext(
                 cv_image,
-                allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@.-+() ',  # Limit character set
-                width_ths=0.7,  # Reduce width threshold for faster processing
-                height_ths=0.7,  # Reduce height threshold for faster processing
-                paragraph=False,  # Disable paragraph detection for speed
-                batch_size=1  # Process one image at a time
+                allowlist=None,  # Remove character restrictions for better recognition
+                width_ths=0.5,   # Lower threshold for better text detection
+                height_ths=0.5,  # Lower threshold for better text detection
+                paragraph=True,  # Enable paragraph detection for structured text
+                batch_size=1    # Process one image at a time
             )
             return results
         except Exception as e:
-            self.logger.warning(f"Optimized EasyOCR failed, falling back to standard: {e}")
-            # Fallback to standard EasyOCR
-            return self.easyocr_reader.readtext(cv_image)
+            self.logger.warning(f"Enhanced EasyOCR failed, falling back to standard: {e}")
+            # Fallback to standard EasyOCR with basic parameters
+            try:
+                return self.easyocr_reader.readtext(cv_image)
+            except Exception as e2:
+                self.logger.error(f"Standard EasyOCR also failed: {e2}")
+                return []
