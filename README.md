@@ -1,16 +1,15 @@
-# Visitor Intelligence Platform - Backend
+# OCR Business Card Processing Platform - Backend
 
-AI-driven Visitor Intelligence Platform backend built with FastAPI, PostgreSQL, and Celery.
+AI-driven business card processing platform with company data enrichment using Apollo.io.
 
 ## Features
 
 - **FastAPI** - Modern, fast web framework
-- **PostgreSQL** - Primary database
-- **Redis** - Caching and message broker
-- **Celery** - Background task processing
-- **OCR Integration** - Text extraction from images
-- **AI Services** - LLM integration for insights
-- **Research Automation** - Company data enrichment
+- **OCR Integration** - Text extraction from business cards (Tesseract, EasyOCR)
+- **QR Code Detection** - Extract contact info from QR codes
+- **Apollo.io Integration** - Company data enrichment (replaces LinkedIn scraping)
+- **Company Research** - Automated data enrichment
+- **Database Storage** - Supabase integration for data persistence
 
 ## Project Structure
 
@@ -49,6 +48,17 @@ cp env.example .env
 # Set database URLs, API keys, etc.
 ```
 
+### 3. Apollo.io Configuration
+
+```bash
+# Get your Apollo.io API key from https://app.apollo.io/
+# Add to .env file:
+APOLLO_API_KEY=your_apollo_api_key_here
+
+# Optional: Scrapfly for LinkedIn fallback
+SCRAPFLY_API_KEY=your_scrapfly_api_key_here
+```
+
 ### 3. Database Setup
 
 ```bash
@@ -75,24 +85,23 @@ python run.py
 
 ## API Endpoints
 
-### Visitors
-- `GET /api/v1/visitors/` - List visitors
-- `POST /api/v1/visitors/` - Create visitor
-- `GET /api/v1/visitors/{id}` - Get visitor
-- `PUT /api/v1/visitors/{id}` - Update visitor
-- `DELETE /api/v1/visitors/{id}` - Delete visitor
+### OCR Processing
+- `POST /ocr` - Process image with OCR
+- `POST /business-card` - Extract business card data with AI analysis
+- `POST /batch-ocr` - Process multiple images
+- `POST /qr-scan` - Scan QR codes in images
 
-### OCR
-- `POST /api/v1/ocr/process` - Process image with OCR
-- `POST /api/v1/ocr/business-card` - Extract business card data
+### Company Data Enrichment (Apollo.io)
+- `POST /search-company` - Search company information using Apollo.io
+- `POST /search-companies` - Search multiple companies
+- `POST /search-company-contacts` - Get contacts at a company
 
-### AI
-- `POST /api/v1/ai/summarize` - Generate profile summary
-- `POST /api/v1/ai/suggestions` - Get engagement suggestions
+### URL Content Extraction
+- `POST /extract-url-content` - Extract contact info from URLs
 
-### Research
-- `POST /api/v1/research/enrich` - Enrich company data
-- `POST /api/v1/research/social-discovery` - Discover social profiles
+### Health & Debug
+- `GET /health` - Health check
+- `GET /debug-qr` - Debug QR code detection
 
 ## Development
 

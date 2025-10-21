@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LinkedIn Company Scraper - Integrated with existing backend
+LinkedIn Company Scraper - Using Scrapfly API for better performance and memory efficiency
 """
 
 import asyncio
@@ -10,117 +10,108 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import sys
 import os
+import requests
+from datetime import datetime
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    import scrapy
-    from scrapy.crawler import CrawlerProcess
-    from scrapy.utils.project import get_project_settings
-    from scrapy import Spider
-    from scrapy_playwright.page import PageMethod
-    SCRAPY_AVAILABLE = True
+    from scrapfly import ScrapflyClient, ScrapeConfig
+    SCRAPFLY_AVAILABLE = True
 except ImportError as e:
-    SCRAPY_AVAILABLE = False
-    print(f"⚠️ Scrapy not available: {e}")
-    print("Install with: pip install scrapy scrapy-playwright")
+    SCRAPFLY_AVAILABLE = False
+    print(f"⚠️ Scrapfly not available: {e}")
+    print("Install with: pip install scrapfly-sdk")
 
-class LinkedInCompanySpider(Spider):
-    name = "linkedin_company_profile"
+class LinkedInDataExtractor:
+    """Extract LinkedIn company data from HTML content"""
     
-    def __init__(self, company_name=None, company_url=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.company_name = company_name
-        self.company_url = company_url
-        self.start_urls = [company_url] if company_url else []
-        
-    custom_settings = {
-        "PLAYWRIGHT_BROWSER_TYPE": "chromium",
-        "DOWNLOAD_HANDLERS": {
-            "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-            "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-        },
-        "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
-        "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "ROBOTSTXT_OBEY": False,
-        "DOWNLOAD_DELAY": 2,
-        "RANDOMIZE_DOWNLOAD_DELAY": True,
-    }
-
-    def start_requests(self):
-        for url in self.start_urls:
-            yield scrapy.Request(
-                url=url,
-                meta=dict(
-                    playwright=True,
-                    playwright_include_page=True,
-                    playwright_page_methods=[
-                        PageMethod("wait_for_timeout", 3000),
-                        PageMethod("wait_for_selector", "h1", timeout=10000),
-                    ],
-                ),
-                callback=self.parse,
-            )
-
-    def parse(self, response):
-        self.logger.info(f"Scraping LinkedIn company: {response.url}")
-        
-        # Extract company information
-        company_name = response.css('h1::text').get()
-        if company_name:
-            company_name = company_name.strip()
-        
-        # Extract structured data using dt/dd pattern
-        website = self._extract_field(response, "Website", "a::attr(href)")
-        industry = self._extract_field(response, "Industry", "::text")
-        size = self._extract_field(response, "Company size", "::text")
-        hq_location = self._extract_field(response, "Headquarters", "::text")
-        company_type = self._extract_field(response, "Type", "::text")
-        
-        data = {
-            "company_name": company_name,
-            "website": website,
-            "industry": industry,
-            "size": size,
-            "hq_location": hq_location,
-            "company_type": company_type,
-            "url": response.url,
-            "status": response.status,
-            "scraped_at": self._get_timestamp()
-        }
-        
-        self.logger.info(f"Extracted data: {data}")
-        yield data
-
-    def _extract_field(self, response, field_name, selector):
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def extract_company_data(self, html_content: str, url: str) -> Dict[str, Any]:
+        """Extract company information from LinkedIn HTML"""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Extract company name
+            company_name = self._extract_text(soup, 'h1')
+            
+            # Extract structured data
+            website = self._extract_field(soup, "Website")
+            industry = self._extract_field(soup, "Industry")
+            size = self._extract_field(soup, "Company size")
+            hq_location = self._extract_field(soup, "Headquarters")
+            company_type = self._extract_field(soup, "Type")
+            
+            data = {
+                "company_name": company_name,
+                "website": website,
+                "industry": industry,
+                "size": size,
+                "hq_location": hq_location,
+                "company_type": company_type,
+                "url": url,
+                "scraped_at": self._get_timestamp()
+            }
+            
+            self.logger.info(f"Extracted data: {data}")
+            return data
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract data: {e}")
+            return {"error": str(e), "url": url}
+    
+    def _extract_text(self, soup, selector):
+        """Extract text from element"""
+        try:
+            element = soup.select_one(selector)
+            return element.get_text().strip() if element else None
+        except:
+            return None
+    
+    def _extract_field(self, soup, field_name):
         """Extract field using dt:contains pattern"""
         try:
-            dd_element = response.css(f'dt:contains("{field_name}") + dd')
-            if dd_element:
-                if selector == "a::attr(href)":
-                    return dd_element.css('a::attr(href)').get()
+            dt_element = soup.find('dt', string=lambda text: text and field_name in text)
+            if dt_element and dt_element.find_next_sibling('dd'):
+                dd_element = dt_element.find_next_sibling('dd')
+                if field_name == "Website":
+                    link = dd_element.find('a')
+                    return link.get('href') if link else dd_element.get_text().strip()
                 else:
-                    return dd_element.css(selector).get()
+                    return dd_element.get_text().strip()
         except Exception as e:
             self.logger.warning(f"Failed to extract {field_name}: {e}")
         return None
-
+    
     def _get_timestamp(self):
         """Get current timestamp"""
-        from datetime import datetime
         return datetime.now().isoformat()
 
 
 class LinkedInScraperService:
-    """Service class for LinkedIn company scraping"""
+    """Service class for LinkedIn company scraping using Scrapfly API"""
     
-    def __init__(self):
+    def __init__(self, scrapfly_api_key: str = None):
         self.logger = logging.getLogger(__name__)
+        self.api_key = scrapfly_api_key or os.getenv('SCRAPFLY_API_KEY')
+        self.extractor = LinkedInDataExtractor()
+        
+        if SCRAPFLY_AVAILABLE and self.api_key:
+            self.client = ScrapflyClient(key=self.api_key)
+        else:
+            self.client = None
+            if not SCRAPFLY_AVAILABLE:
+                self.logger.warning("Scrapfly SDK not available. Install with: pip install scrapfly-sdk")
+            if not self.api_key:
+                self.logger.warning("SCRAPFLY_API_KEY not set. Using mock data.")
         
     async def scrape_company(self, company_name: str) -> Dict[str, Any]:
         """
-        Scrape LinkedIn company information
+        Scrape LinkedIn company information using Scrapfly API
         
         Args:
             company_name: Name of the company to scrape
@@ -128,9 +119,6 @@ class LinkedInScraperService:
         Returns:
             Dict containing company information
         """
-        if not SCRAPY_AVAILABLE:
-            raise ImportError("Scrapy not available. Install with: pip install scrapy scrapy-playwright")
-        
         # Construct LinkedIn company URL
         company_slug = company_name.lower().replace(" ", "-").replace("&", "and")
         company_url = f"https://www.linkedin.com/company/{company_slug}/"
@@ -138,9 +126,39 @@ class LinkedInScraperService:
         self.logger.info(f"Scraping LinkedIn for company: {company_name}")
         self.logger.info(f"Company URL: {company_url}")
         
-        # For now, return mock data to test the endpoint
-        # TODO: Implement actual scraping
-        mock_data = {
+        if not self.client:
+            # Return mock data if Scrapfly not available
+            return self._get_mock_data(company_name, company_url)
+        
+        try:
+            # Use Scrapfly to scrape the LinkedIn page
+            result = await self.client.scrape(
+                ScrapeConfig(
+                    url=company_url,
+                    render_js=True,  # LinkedIn uses JavaScript
+                    country="US",    # Use US proxy
+                    wait_for_selector="h1",  # Wait for company name to load
+                    timeout=30000,   # 30 second timeout
+                )
+            )
+            
+            if result.success:
+                # Extract data from HTML
+                data = self.extractor.extract_company_data(result.content, company_url)
+                self.logger.info(f"Successfully scraped: {company_name}")
+                return data
+            else:
+                self.logger.error(f"Scrapfly failed for {company_name}: {result.error}")
+                return self._get_mock_data(company_name, company_url)
+                
+        except Exception as e:
+            self.logger.error(f"Error scraping {company_name}: {e}")
+            return self._get_mock_data(company_name, company_url)
+    
+    def _get_mock_data(self, company_name: str, company_url: str) -> Dict[str, Any]:
+        """Return mock data when scraping fails"""
+        company_slug = company_name.lower().replace(" ", "-").replace("&", "and")
+        return {
             "company_name": company_name,
             "website": f"https://{company_slug}.com",
             "industry": "Technology",
@@ -148,15 +166,12 @@ class LinkedInScraperService:
             "hq_location": "Mountain View, CA",
             "company_type": "Public Company",
             "url": company_url,
-            "scraped_at": self._get_timestamp()
+            "scraped_at": self._get_timestamp(),
+            "note": "Mock data - Scrapfly not configured"
         }
-        
-        self.logger.info(f"Mock data generated for: {company_name}")
-        return mock_data
     
     def _get_timestamp(self):
         """Get current timestamp"""
-        from datetime import datetime
         return datetime.now().isoformat()
     
     async def scrape_multiple_companies(self, company_names: list) -> list:

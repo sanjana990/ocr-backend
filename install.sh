@@ -79,9 +79,8 @@ fi
 echo "📦 Installing Python dependencies..."
 pip install -r requirements.txt
 
-# Install Playwright browsers
-echo "🌐 Installing Playwright browsers..."
-playwright install chromium
+# Install Scrapfly dependencies
+echo "🌐 Scrapfly SDK will be installed via pip..."
 
 # Create necessary directories
 echo "📁 Creating necessary directories..."
@@ -106,8 +105,7 @@ try:
     import pillow
     import pytesseract
     import easyocr
-    import playwright
-    import scrapy
+    import scrapfly
     import bs4
     print('✅ All dependencies installed successfully')
 except ImportError as e:
@@ -126,7 +124,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "🔧 Available commands:"
     echo "- python run.py          # Start FastAPI server"
-    echo "- playwright install     # Install browser dependencies"
+    echo "- Set SCRAPFLY_API_KEY   # Configure Scrapfly API key"
     echo ""
     echo "📚 Documentation:"
     echo "- API Docs: http://localhost:8000/api/v1/docs"

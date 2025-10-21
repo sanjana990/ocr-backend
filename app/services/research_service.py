@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List
 import asyncio
 import requests
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
+# Removed Playwright dependency - using Scrapfly for web scraping
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -90,25 +90,21 @@ class ResearchService:
             search_query = f"{company_name} official website"
             search_url = f"https://www.google.com/search?q={search_query}"
             
-            async with async_playwright() as p:
-                browser = await p.chromium.launch()
-                page = await browser.new_page()
+            # Use requests for simple Google search (no JavaScript needed for basic results)
+            response = self.session.get(search_url, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
                 
-                await page.goto(search_url)
-                await page.wait_for_load_state('networkidle')
-                
-                # Look for official website in search results
-                links = await page.query_selector_all('a[href*="http"]')
-                
+                # Extract search result links
+                links = soup.find_all('a', href=True)
                 for link in links:
-                    href = await link.get_attribute('href')
-                    if href and not any(domain in href for domain in ['google.com', 'youtube.com', 'facebook.com', 'linkedin.com']):
-                        # Check if it looks like an official website
-                        if any(keyword in href.lower() for keyword in ['company', 'corp', 'inc', 'llc', 'ltd']):
-                            await browser.close()
-                            return href
-                
-                await browser.close()
+                    href = link.get('href', '')
+                    if href.startswith('/url?q='):
+                        # Extract actual URL from Google redirect
+                        actual_url = href.split('/url?q=')[1].split('&')[0]
+                        if not any(domain in actual_url for domain in ['google.com', 'youtube.com', 'facebook.com', 'linkedin.com']):
+                            if any(keyword in actual_url.lower() for keyword in ['company', 'corp', 'inc', 'llc', 'ltd']):
+                                return actual_url
                 return None
                 
         except Exception as e:
