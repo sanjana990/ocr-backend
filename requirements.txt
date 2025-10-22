@@ -23,4 +23,6 @@ motor>=3.3.0
 pymongo>=4.6.0
 
 # Web scraping
-playwright>=1.40.0
+
+# WhatsApp integration
+twilio>=8.0.0

@@ -3,7 +3,7 @@ API v1 router configuration
 """
 
 from fastapi import APIRouter
-from app.api.v1.endpoints import visitors, companies, ocr, ai, research
+from app.api.v1.endpoints import visitors, companies, ocr, ai, research, whatsapp
 
 api_router = APIRouter()
 
@@ -13,3 +13,4 @@ api_router.include_router(companies.router, prefix="/companies", tags=["companie
 api_router.include_router(ocr.router, prefix="/ocr", tags=["ocr"])
 api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
 api_router.include_router(research.router, prefix="/research", tags=["research"])
+api_router.include_router(whatsapp.router, prefix="/whatsapp", tags=["whatsapp"])

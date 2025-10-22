@@ -14,7 +14,7 @@ try:
 except ImportError:
     print("⚠️ python-dotenv not installed, using system environment variables")
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, Form, Response
 from typing import List, Dict, Any
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
@@ -206,8 +206,26 @@ async def root():
     return {
         "message": "Simple OCR Server",
         "status": "running",
-        "tesseract_version": pytesseract.get_tesseract_version()
+        "tesseract_version": pytesseract.get_tesseract_version(),
+        "whatsapp_webhook": "/api/v1/whatsapp/webhook"
     }
+
+@app.post("/")
+async def root_post(request: Request):
+    """Handle POST requests to root - likely from Twilio webhook misconfiguration"""
+    try:
+        # Check if this looks like a Twilio webhook request
+        form_data = await request.form()
+        if "From" in form_data and "whatsapp:" in str(form_data.get("From", "")):
+            # Redirect to proper webhook endpoint
+            from app.services.twilio_whatsapp_service import twilio_whatsapp_service
+            return twilio_whatsapp_service.create_webhook_response(
+                "⚠️ Webhook misconfigured. Please update Twilio webhook URL to: /api/v1/whatsapp/webhook"
+            )
+        else:
+            return {"error": "Method Not Allowed - Use GET for root endpoint"}
+    except Exception as e:
+        return {"error": f"Invalid request: {str(e)}"}
 
 
 @app.get("/health")
@@ -1076,6 +1094,179 @@ async def crawl_multiple_companies(
         raise HTTPException(status_code=500, detail=f"Batch crawl failed: {str(e)}")
 
 
+# WhatsApp webhook endpoint
+@app.post("/api/v1/whatsapp/webhook")
+async def whatsapp_webhook(
+    request: Request,
+    From: str = Form(...),
+    To: str = Form(...),
+    Body: str = Form(None),
+    NumMedia: str = Form("0"),
+    MediaUrl0: str = Form(None),
+    MediaContentType0: str = Form(None)
+):
+    """Handle incoming WhatsApp messages via Twilio"""
+    try:
+        # Import WhatsApp service
+        from app.services.twilio_whatsapp_service import twilio_whatsapp_service
+        
+        # Extract phone number (remove whatsapp: prefix)
+        sender_number = From.replace("whatsapp:", "")
+        
+        logger.info("📱 WhatsApp message received", 
+                   from_number=sender_number, 
+                   has_media=NumMedia != "0",
+                   body=Body,
+                   num_media=NumMedia,
+                   body_is_none=Body is None)
+        
+        # Handle text messages
+        if Body and NumMedia == "0":
+            body_lower = Body.lower().strip()
+            
+            # Welcome messages
+            if body_lower in ["hi", "hello", "start"]:
+                welcome_message = (
+                    "👋 *Welcome to Business Card Scanner!*\n\n"
+                    "📸 Send me a photo of a business card and I'll extract all the information for you!\n\n"
+                    "✨ *Features:*\n"
+                    "• Extract contact details (name, title, company)\n"
+                    "• Scan phone numbers and emails\n"
+                    "• Detect QR codes and websites\n"
+                    "• Company data enrichment\n"
+                    "• Industry analysis\n\n"
+                    "Just send a clear photo of any business card to get started! 🚀"
+                )
+                twiml_response = twilio_whatsapp_service.create_webhook_response(welcome_message)
+                return Response(content=twiml_response, media_type="application/xml")
+            
+            # Help message
+            elif body_lower in ["help", "commands", "?"]:
+                help_message = (
+                    "📸 *How to use Business Card Scanner:*\n\n"
+                    "1. Take a clear photo of a business card\n"
+                    "2. Send the photo to this chat\n"
+                    "3. Get instant analysis with:\n"
+                    "   • Contact information\n"
+                    "   • QR code data\n"
+                    "   • Company enrichment\n"
+                    "   • Industry details\n\n"
+                    "💡 *Tips for best results:*\n"
+                    "• Ensure good lighting\n"
+                    "• Keep the card flat\n"
+                    "• Avoid shadows and glare\n"
+                    "• Make sure text is readable"
+                )
+                twiml_response = twilio_whatsapp_service.create_webhook_response(help_message)
+                return Response(content=twiml_response, media_type="application/xml")
+            
+            # Default text response
+            else:
+                help_message = (
+                    "📸 Please send a photo of a business card to get started!\n\n"
+                    "I can extract:\n"
+                    "• Names, titles, companies\n"
+                    "• Phone numbers and emails\n"
+                    "• QR codes and websites\n"
+                    "• Company enrichment data\n\n"
+                    "Type 'help' for more information."
+                )
+                twiml_response = twilio_whatsapp_service.create_webhook_response(help_message)
+                return Response(content=twiml_response, media_type="application/xml")
+        
+        # Handle image messages
+        if NumMedia and NumMedia != "0" and int(NumMedia) > 0 and MediaUrl0:
+            try:
+                # Validate content type
+                if not MediaContentType0 or not MediaContentType0.startswith('image/'):
+                    twiml_response = twilio_whatsapp_service.create_webhook_response(
+                        "❌ Please send a valid image file (JPG, PNG, etc.)"
+                    )
+                    return Response(content=twiml_response, media_type="application/xml")
+                
+                logger.info("📷 Processing business card image", 
+                           media_url=MediaUrl0, 
+                           content_type=MediaContentType0)
+                
+                # Download image from Twilio
+                image_data = await twilio_whatsapp_service.download_media(MediaUrl0)
+                if not image_data:
+                    twiml_response = twilio_whatsapp_service.create_webhook_response(
+                        "❌ Failed to download image. Please try again."
+                    )
+                    return Response(content=twiml_response, media_type="application/xml")
+                
+                logger.info("📥 Image downloaded", size=len(image_data))
+                
+                # Process with OCR service
+                result = await ocr_service.extract_business_card_data(image_data, use_vision=True)
+                
+                if not result["success"]:
+                    error_message = (
+                        "❌ Sorry, I couldn't process the image.\n\n"
+                        "💡 *Tips for better results:*\n"
+                        "• Ensure good lighting\n"
+                        "• Keep the card flat and straight\n"
+                        "• Avoid shadows and glare\n"
+                        "• Make sure all text is visible\n\n"
+                        "Please try with a clearer photo!"
+                    )
+                    twiml_response = twilio_whatsapp_service.create_webhook_response(error_message)
+                    return Response(content=twiml_response, media_type="application/xml")
+                
+                logger.info("✅ OCR processing completed", 
+                           confidence=result.get("confidence", 0),
+                           qr_count=result.get("qr_count", 0))
+                
+                # Get company enrichment if company found
+                company_name = result.get("data", {}).get("company")
+                if company_name and APOLLO_SERVICE_AVAILABLE:
+                    try:
+                        logger.info("🏢 Starting company enrichment", company=company_name)
+                        enrichment = await apollo_service.search_company(company_name)
+                        result["enrichment"] = enrichment
+                        logger.info("✅ Company enrichment completed", company=company_name)
+                    except Exception as e:
+                        logger.warning("⚠️ Company enrichment failed", company=company_name, error=str(e))
+                elif company_name and not APOLLO_SERVICE_AVAILABLE:
+                    logger.info("⚠️ Apollo.io not available, skipping enrichment")
+                
+                # Send formatted response via WhatsApp API (async)
+                try:
+                    await twilio_whatsapp_service.send_business_card_analysis(sender_number, result)
+                    logger.info("📤 Business card analysis sent", to=sender_number)
+                except Exception as e:
+                    logger.error("❌ Failed to send analysis", error=str(e))
+                    twiml_response = twilio_whatsapp_service.create_webhook_response(
+                        "❌ Analysis completed but failed to send results. Please try again."
+                    )
+                    return Response(content=twiml_response, media_type="application/xml")
+                
+                # Return empty response (we sent message via API)
+                twiml_response = twilio_whatsapp_service.create_webhook_response("")
+                return Response(content=twiml_response, media_type="application/xml")
+                
+            except Exception as e:
+                logger.error("❌ Error processing image", error=str(e))
+                twiml_response = twilio_whatsapp_service.create_webhook_response(
+                    "❌ Error processing image. Please try again with a different photo."
+                )
+                return Response(content=twiml_response, media_type="application/xml")
+        
+        # Default response
+        twiml_response = twilio_whatsapp_service.create_webhook_response(
+            "📸 Please send a photo of a business card to get started!"
+        )
+        return Response(content=twiml_response, media_type="application/xml")
+        
+    except Exception as e:
+        logger.error("❌ WhatsApp webhook error", error=str(e))
+        twiml_response = twilio_whatsapp_service.create_webhook_response(
+            "❌ An error occurred. Please try again."
+        )
+        return Response(content=twiml_response, media_type="application/xml")
+
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting Simple OCR Server...")
@@ -1083,4 +1274,5 @@ if __name__ == "__main__":
     print("🔧 Backend API: http://localhost:8000")
     print("📚 API Docs: http://localhost:8000/docs")
     print("❤️  Health Check: http://localhost:8000/health")
+    print("📱 WhatsApp Webhook: http://localhost:8000/api/v1/whatsapp/webhook")
     uvicorn.run(app, host="0.0.0.0", port=8000)
