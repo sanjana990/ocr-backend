@@ -464,8 +464,14 @@ class OCRService:
                                         # Create a simple object that mimics pyzbar result
                                         class QRResult:
                                             def __init__(self, data, type_name):
-                                                self.data = data.encode('utf-8')
+                                                self.data = data  # Keep as string for JSON serialization
                                                 self.type = type_name
+                                            
+                                            def to_dict(self):
+                                                return {
+                                                    'data': self.data,
+                                                    'type': self.type
+                                                }
                                         
                                         qr_result = QRResult(data, 'QRCODE')
                                         all_qr_codes.append(qr_result)
@@ -506,8 +512,7 @@ class OCRService:
                     qr_results.append({
                         "data": data,
                         "type": qr_type,
-                        "parsed": parsed_qr,
-                        "raw": qr
+                        "parsed": parsed_qr
                     })
                     
                     # Merge parsed data

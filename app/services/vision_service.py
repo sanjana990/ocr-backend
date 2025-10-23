@@ -4,13 +4,15 @@ Vision-based Business Card Analysis Service
 Uses GPT-4o-mini with vision capabilities for structured business card analysis
 """
 
+import io
 import base64
 import json
 import structlog
 from typing import Dict, Any, Optional
-from openai import OpenAI
+from google import genai
 import os
 from dotenv import load_dotenv
+from PIL import Image, ImageOps, ImageEnhance
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,115 +20,322 @@ load_dotenv()
 logger = structlog.get_logger(__name__)
 
 class VisionService:
-    """Service for analyzing business cards using GPT-4o-mini vision capabilities"""
+    """Service for analyzing business cards using Gemini 2.5 Flash vision capabilities"""
     
     def __init__(self):
-        """Initialize the vision service with OpenAI client"""
-        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        self.model = "gpt-4o-mini"
+        """Initialize the vision service with Gemini client"""
+        self.client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
+        self.model = "gemini-2.5-flash"
         
     async def analyze_business_card(self, image_data: bytes) -> Dict[str, Any]:
         """
-        Analyze business card image using GPT-4o-mini vision
-        
-        Args:
-            image_data: Raw image bytes
-            
-        Returns:
-            Dict containing structured business card information
+        Analyze business card image using Gemini 2.5 Flash with preprocessing and strict JSON forcing.
         """
         try:
-            # Convert image to base64
-            base64_image = base64.b64encode(image_data).decode('utf-8')
-            
-            # Create the analysis prompt
             prompt = self._create_business_card_prompt()
-            
-            # Call OpenAI API
-            response = self.client.chat.completions.create(
+            # Preprocess image
+            pre_bytes, mime_type, dbg = self._preprocess_image(image_data)
+
+            # Call Gemini with inline image bytes + text prompt
+            response = self.client.models.generate_content(
                 model=self.model,
-                messages=[
+                contents=[
                     {
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
+                        "parts": [
+                            {"text": prompt},
+                            {"mime_type": mime_type, "data": pre_bytes},
+                        ],
                     }
                 ],
-                max_tokens=1000,
-                temperature=0.1
+                generation_config={
+                    "temperature": 0.1,
+                    "max_output_tokens": 1000,
+                    "response_mime_type": "application/json",
+                },
             )
-            
-            # Parse the response
-            analysis_text = response.choices[0].message.content
+
+            analysis_text = (response.text or "").strip()
             structured_data = self._parse_analysis_response(analysis_text)
             
             logger.info("✅ Vision analysis completed", 
                        confidence=structured_data.get('confidence', 0),
-                       fields_extracted=len([k for k, v in structured_data.get('contact_info', {}).items() if v]))
-            
-            return {
-                "success": True,
-                "method": "vision_analysis",
-                "confidence": structured_data.get('confidence', 0.0),
-                "structured_info": structured_data,
-                "raw_analysis": analysis_text
-            }
+                       fields_extracted=len([k for k, v in structured_data.get('contact_info', {}).items() if v]),
+                       preprocess=dbg)
+
+            # Fallback if sparse or empty
+            needs_fallback = not structured_data or not structured_data.get('contact_info')
+            if needs_fallback:
+                transcript = await self._transcribe_text_from_image(pre_bytes, mime_type)
+                structured_from_text = await self._structure_from_text(transcript)
+                base_count = len([v for v in structured_data.get('contact_info', {}).values() if v]) if structured_data else 0
+                text_count = len([v for v in structured_from_text.get('contact_info', {}).values() if v]) if structured_from_text else 0
+                final_struct = structured_from_text if text_count >= base_count else structured_data
+                return {
+                    "success": True,
+                    "method": "vision_analysis_gemini_fallback" if final_struct is structured_from_text else "vision_analysis_gemini",
+                    "confidence": final_struct.get('confidence', 0.0),
+                    "structured_info": final_struct,
+                    "raw_analysis": analysis_text,
+                    "transcript_used": True,
+                }
+            else:
+                return {
+                    "success": True,
+                    "method": "vision_analysis_gemini",
+                    "confidence": structured_data.get('confidence', 0.0),
+                    "structured_info": structured_data,
+                    "raw_analysis": analysis_text
+                }
             
         except Exception as e:
             logger.error("❌ Vision analysis failed", error=str(e))
             return {
                 "success": False,
                 "error": str(e),
-                "method": "vision_analysis",
+                "method": "vision_analysis_gemini",
                 "confidence": 0.0,
                 "structured_info": {}
             }
-    
-    def _create_business_card_prompt(self) -> str:
-        """Create the prompt for business card analysis"""
-        return """
-Analyze this business card image and extract structured information. Return your analysis as a JSON object with the following structure:
 
+    def _preprocess_image(self, image_data: bytes):
+        """Lightweight preprocessing with PIL to improve OCR robustness."""
+        debug = {}
+        try:
+            im = Image.open(io.BytesIO(image_data))
+            debug["orig_size"] = im.size
+            # Auto-orient
+            try:
+                im = ImageOps.exif_transpose(im)
+            except Exception:
+                pass
+            # Grayscale and normalize
+            im = im.convert("L")
+            im = ImageOps.autocontrast(im)
+            im = ImageEnhance.Contrast(im).enhance(1.3)
+            im = ImageEnhance.Sharpness(im).enhance(1.15)
+            # Simple binarization
+            im = im.point(lambda p: 255 if p > 175 else 0)
+            # Resize longest side to <= 1600px
+            max_side = 1600
+            w, h = im.size
+            scale = min(1.0, max_side / max(w, h))
+            if scale < 1.0:
+                im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            debug["proc_size"] = im.size
+            # Encode JPEG
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=92, optimize=True)
+            return out.getvalue(), "image/jpeg", debug
+        except Exception as e:
+            logger.warning("Preprocess failed, using original bytes", error=str(e))
+            return image_data, self._guess_mime_type(image_data), {"preprocess": "failed"}
+
+    def _guess_mime_type(self, image_data: bytes) -> str:
+        try:
+            im = Image.open(io.BytesIO(image_data))
+            fmt = (im.format or "").upper()
+            if fmt == "PNG":
+                return "image/png"
+            if fmt in ("JPG", "JPEG"):
+                return "image/jpeg"
+            if fmt == "WEBP":
+                return "image/webp"
+            if fmt == "GIF":
+                return "image/gif"
+            return "image/jpeg"
+        except Exception:
+            return "image/jpeg"
+
+    def _create_business_card_prompt(self) -> str:
+        # Emphasize strict JSON only in response
+        return """You are an expert OCR and document analysis system specializing in business card extraction. Analyze the provided business card image with precision.
+
+Return ONLY a valid JSON object (no prose, no markdown). Do not include triple backticks.
+
+TASK: Extract all contact information from the business card and return ONLY a valid JSON object.
+
+REQUIRED JSON STRUCTURE:
 {
-  "confidence": 0.95,
-  "contact_info": {
-    "name": "John Smith",
-    "title": "Software Engineer",
-    "company": "Tech Corp",
-    "phone": "+1-555-123-4567",
-    "email": "john@techcorp.com",
-    "website": "www.techcorp.com",
-    "address": "123 Main St, City, State 12345"
-  },
-  "analysis_notes": "Clear, well-formatted business card with all standard contact information",
-  "quality_assessment": {
-    "image_quality": "good",
-    "text_clarity": "excellent",
-    "layout_complexity": "simple"
-  }
+ "confidence": 0.95,
+ "contact_info": {
+   "name": "string or null",
+   "title": "string or null",
+   "company": "string or null",
+   "phone": "string or null",
+   "mobile": "string or null",
+   "fax": "string or null",
+   "email": "string or null",
+   "website": "string or null",
+   "linkedin": "string or null",
+   "address": "string or null",
+   "additional_contacts": []
+ },
+ "visual_elements": {
+   "logo_present": true/false,
+   "card_color": "string",
+   "layout_orientation": "horizontal/vertical"
+ },
+ "analysis_notes": "string",
+ "quality_assessment": {
+   "image_quality": "excellent/good/fair/poor",
+   "text_clarity": "excellent/good/fair/poor",
+   "layout_complexity": "simple/moderate/complex",
+   "ocr_challenges": "string or null"
+ },
+ "language_detected": "string"
 }
 
-Guidelines:
-- Extract ALL visible contact information
-- Use null for missing fields
-- Provide confidence score (0.0-1.0) based on clarity and completeness
-- Include analysis notes about the card's quality and any challenges
-- Be precise with phone numbers, emails, and addresses
-- If you see multiple people or companies, extract the primary contact
-- Handle both traditional and digital business card formats
+CRITICAL EXTRACTION RULES:
+1. Read EVERY piece of text visible on the card, no matter how small
+2. Scan the ENTIRE image including edges, corners, and reverse side if visible
+3. Look for text in multiple orientations (some cards have vertical text)
+4. Distinguish between different types of phone numbers (office, mobile, fax)
+5. Extract social media handles if present (LinkedIn, Twitter, etc.)
+6. Preserve exact formatting for phone numbers and addresses as shown
+7. If multiple contacts are present, extract ALL and note the primary one
 
-Return ONLY the JSON object, no additional text.
-"""
+FIELD-SPECIFIC INSTRUCTIONS:
+
+**Name:**
+- Usually the largest or most prominent text
+- May include titles like Dr., Prof., etc.
+- Look for First Name, Middle Initial, Last Name
+
+**Title/Position:**
+- Typically below or near the name
+- Examples: "CEO", "Marketing Director", "Senior Engineer"
+
+**Company:**
+- Often at the top or includes a logo
+- May be in a different font/style than other text
+
+**Phone Numbers:**
+- Distinguish between: office phone, mobile/cell, direct line, fax
+- Preserve formatting: +1-555-123-4567, (555) 123-4567, +44 20 1234 5678
+- Note country codes
+
+**Email:**
+- Look for @ symbol
+- Common patterns: firstname.lastname@company.com
+
+**Website:**
+- May or may not include http:// or www.
+- Extract as shown on card
+
+**Address:**
+- May span multiple lines
+- Include: Street, Suite/Floor, City, State/Province, ZIP/Postal Code, Country
+- Preserve line breaks with commas
+
+**Social Media:**
+- LinkedIn profiles (linkedin.com/in/...)
+- Twitter handles (@username)
+- Other professional networks
+
+VISUAL ANALYSIS:
+- Assess image quality (resolution, lighting, focus)
+- Note if card is tilted, folded, or partially obscured
+- Identify if it's a photo of a physical card or a digital mockup
+- Check for glare, shadows, or blur that may affect OCR
+
+CONFIDENCE SCORING (0.0 to 1.0):
+- 0.9-1.0: All text is crystal clear, well-lit, high resolution
+- 0.7-0.9: Minor blur or shadows, but all info readable
+- 0.5-0.7: Some text unclear, may have partial occlusions
+- 0.3-0.5: Significant quality issues, missing information likely
+- 0.0-0.3: Extremely poor quality, minimal extractable data
+
+HANDLING EDGE CASES:
+- Multiple languages: Detect and note the primary language
+- QR codes: Note presence but don't attempt to decode (mention in analysis_notes)
+- Logos/graphics: Describe if they obscure text
+- Handwritten additions: Extract if legible, note in analysis_notes
+- Dual-sided cards: If both sides visible, extract from both
+- Digital business cards: Extract from screenshots or digital formats
+
+QUALITY ASSESSMENT CRITERIA:
+- Image quality: Resolution, lighting, focus sharpness
+- Text clarity: Font legibility, contrast, size
+- Layout complexity: Single-column vs. multi-column, text density
+- OCR challenges: Unusual fonts, decorative elements, background patterns
+
+VERIFICATION STEPS BEFORE RESPONDING:
+1. Have I checked every corner and edge of the image?
+2. Did I capture all phone numbers with their types?
+3. Is the email address complete and correctly formatted?
+4. Did I preserve the exact formatting of addresses and phone numbers?
+5. Is my confidence score justified by the image quality?
+6. Are all null fields truly missing, or did I miss them?
+7. Is the JSON syntactically valid?
+
+OUTPUT REQUIREMENTS:
+- Return ONLY the JSON object (no backticks, no markdown fences)
+- No explanatory text before or after the JSON
+- Ensure valid JSON syntax (proper quotes, commas, brackets)
+- Use null (not "null" or empty string) for missing fields
+- Escape special characters properly
+- If NO business card is detected in the image, return:
+  {
+    "error": "No business card detected in image",
+    "confidence": 0.0
+  }
+
+Now analyze the business card image provided."""
+
+    async def _transcribe_text_from_image(self, image_bytes: bytes, mime_type: str) -> str:
+        """Ask Gemini to transcribe ALL text from the image (no structure)."""
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": "Transcribe ALL text exactly as it appears in the image. Return plain text only."},
+                            {"mime_type": mime_type, "data": image_bytes},
+                        ],
+                    }
+                ],
+                generation_config={
+                    "temperature": 0.0,
+                    "max_output_tokens": 1200,
+                    "response_mime_type": "text/plain",
+                },
+            )
+            return (response.text or "").strip()
+        except Exception as e:
+            logger.warning("Transcript step failed", error=str(e))
+            return ""
+
+    async def _structure_from_text(self, transcript: str) -> Dict[str, Any]:
+        """Ask Gemini to map plain text transcript to the JSON schema only."""
+        if not transcript:
+            return {}
+        instruction = (
+            "Return ONLY a valid JSON object mapping this business card text to the required schema. "
+            "Use null for missing fields. No prose."
+        )
+        schema_prompt = (
+            instruction
+            + "\n\nTEXT:\n" + transcript[:6000]
+            + "\n\nREQUIRED JSON KEYS: confidence, contact_info{ name,title,company,phone,mobile,fax,email,website,linkedin,address,additional_contacts }, visual_elements{ logo_present,card_color,layout_orientation }, analysis_notes, quality_assessment{ image_quality,text_clarity,layout_complexity,ocr_challenges }, language_detected"
+        )
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[{"role": "user", "parts": [{"text": schema_prompt}]}],
+                generation_config={
+                    "temperature": 0.1,
+                    "max_output_tokens": 1000,
+                    "response_mime_type": "application/json",
+                },
+            )
+            text = (response.text or "").strip()
+            return self._parse_analysis_response(text)
+        except Exception as e:
+            logger.warning("Structure-from-text failed", error=str(e))
+            return {}
     
     def _parse_analysis_response(self, response_text: str) -> Dict[str, Any]:
         """Parse the GPT response and extract structured data"""

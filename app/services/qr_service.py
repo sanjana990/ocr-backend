@@ -54,7 +54,13 @@ class QRService:
                     self.logger.warning(f"Unexpected OpenCV result format: {len(result)} values")
                     retval, decoded_info, points = False, None, None
                 
-                if retval and decoded_info:
+                # Check if we have valid detection results
+                has_valid_result = (
+                    isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                    decoded_info is not None and decoded_info != ""
+                )
+                
+                if has_valid_result:
                     qr_info = {
                         "data": decoded_info,
                         "type": "QRCODE",
@@ -88,7 +94,13 @@ class QRService:
                                 self.logger.warning(f"Unexpected OpenCV result format: {len(result)} values")
                                 retval, decoded_info, points = False, None, None
                             
-                            if retval and decoded_info:
+                            # Check if we have valid detection results
+                            has_valid_result = (
+                                isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                                decoded_info is not None and decoded_info != ""
+                            )
+                            
+                            if has_valid_result:
                                 qr_info = {
                                     "data": decoded_info,
                                     "type": "QRCODE",
@@ -134,7 +146,13 @@ class QRService:
                                 self.logger.warning(f"Unexpected OpenCV result format: {len(result)} values")
                                 retval, decoded_info, points = False, None, None
                             
-                            if retval and decoded_info:
+                            # Check if we have valid detection results
+                            has_valid_result = (
+                                isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                                decoded_info is not None and decoded_info != ""
+                            )
+                            
+                            if has_valid_result:
                                 qr_info = {
                                     "data": decoded_info,
                                     "type": "QRCODE",

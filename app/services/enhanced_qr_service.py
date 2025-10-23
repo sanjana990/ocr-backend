@@ -156,7 +156,13 @@ class EnhancedQRService:
                         points = None
                         straight_qrcode = None
                     
-                    if retval and decoded_info:
+                    # Check if we have valid detection results
+                    has_valid_result = (
+                        isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                        decoded_info is not None and decoded_info != ""
+                    )
+                    
+                    if has_valid_result:
                         qr_codes.append({
                             'data': decoded_info,
                             'type': 'QRCODE',
@@ -166,7 +172,7 @@ class EnhancedQRService:
                         self.logger.info(f"✅ Found QR with {method_name}: {decoded_info}")
                     
                     # Try multi QR detection only if single detection didn't find anything
-                    if not (retval and decoded_info):
+                    if not has_valid_result:
                         result = self.opencv_detector.detectAndDecodeMulti(processed_img)
                         if len(result) == 4:
                             retval, decoded_info, points, straight_qrcode = result
@@ -178,7 +184,13 @@ class EnhancedQRService:
                             points = None
                             straight_qrcode = None
                         
-                        if retval and decoded_info:
+                        # Check if we have valid multi-detection results
+                        has_multi_result = (
+                            isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                            decoded_info is not None and len(decoded_info) > 0
+                        )
+                        
+                        if has_multi_result:
                             for i, data in enumerate(decoded_info):
                                 if data:  # Only add non-empty data
                                     qr_codes.append({
@@ -232,7 +244,13 @@ class EnhancedQRService:
                     result = self.opencv_detector.detectAndDecode(processed_img)
                     if len(result) >= 2:
                         retval, decoded_info = result[:2]
-                        if retval and decoded_info:
+                        # Check if we have valid results
+                        has_result = (
+                            isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                            decoded_info is not None and decoded_info != ""
+                        )
+                        
+                        if has_result:
                             qr_codes.append({
                                 'data': decoded_info,
                                 'type': 'QRCODE',
@@ -269,7 +287,13 @@ class EnhancedQRService:
                     result = self.opencv_detector.detectAndDecode(scaled_img)
                     if len(result) >= 2:
                         retval, decoded_info = result[:2]
-                        if retval and decoded_info:
+                        # Check if we have valid results
+                        has_result = (
+                            isinstance(retval, (bool, np.bool_)) and bool(retval) and 
+                            decoded_info is not None and decoded_info != ""
+                        )
+                        
+                        if has_result:
                             qr_codes.append({
                                 'data': decoded_info,
                                 'type': 'QRCODE',

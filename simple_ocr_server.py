@@ -4,6 +4,17 @@ Simple OCR Server - Clean and reliable OCR implementation
 """
 import sys
 import os
+from google import genai
+import json
+import re
+# Make crawl4ai optional and expose availability flag
+try:
+    from crawl4ai import AsyncWebCrawler
+    CRAWL4AI_AVAILABLE = True
+except Exception:
+    AsyncWebCrawler = None  # type: ignore
+    CRAWL4AI_AVAILABLE = False
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Load environment variables from .env file
@@ -22,22 +33,12 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
-import pytesseract
 from datetime import datetime
 import time
 from collections import deque
 import asyncio
-
-# Import crawl4ai and genai for company crawling
-try:
-    from crawl4ai import AsyncWebCrawler
-    from google import genai
-    CRAWL4AI_AVAILABLE = True
-    print("✅ Crawl4AI and Gemini available for company crawling")
-except ImportError as e:
-    CRAWL4AI_AVAILABLE = False
-    print(f"⚠️ Crawl4AI not available: {e}")
-    print("Install with: pip install crawl4ai google-generativeai")
+import json
+import re
 
 # QR code detection will use OpenCV only
 
@@ -199,6 +200,126 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Functions
+def _company_extraction_instruction() -> str:
+    return """You are a research assistant tasked with gathering factual company information. Follow these instructions carefully:
+
+TASK: Extract company information and return ONLY a valid JSON object.
+
+REQUIRED JSON STRUCTURE:
+{
+ "Company name": "string",
+ "Description/tagline": "string",
+ "Products/services": "string",
+ "Location/headquarters": "string",
+ "Industry": "string",
+ "Number of employees": "string",
+ "Revenue": "string",
+ "Market Share": "string",
+ "Competitors": "string",
+ "Suggested sources": ["string"]
+}
+
+CRITICAL RULES TO PREVENT HALLUCINATION:
+1. ONLY include information you can verify from actual sources
+2. If you cannot find specific information, write "N/A" - do NOT guess or estimate
+3. When stating facts, you must be able to cite where that information came from
+4. If information is outdated, include the year (e.g., "500-1000 (as of 2023)")
+5. For ambiguous data, use qualifiers like "approximately" or "estimated"
+
+RESEARCH METHODOLOGY:
+Priority order for sources:
+1. Company's official website (About page, Press releases)
+2. Company's LinkedIn page (About section)
+3. Crunchbase profile
+4. Wikipedia article (for established companies)
+5. Recent news articles from reputable sources
+6. SEC filings/10-K reports (for public companies only)
+
+FORMATTING GUIDELINES:
+- Number of employees: Use ranges "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+"
+- Products/services: 1-2 sentence summary of main offerings
+- Revenue: Include currency and year (e.g., "$50M USD (2023)" or "N/A")
+- Market Share: Include percentage and geographic scope if available (e.g., "15% in North America (2023)" or "N/A")
+- Competitors: List 3-5 direct competitors, comma-separated
+- Suggested sources: Include actual URLs you referenced, prioritize LinkedIn and official website
+
+OUTPUT REQUIREMENTS:
+- Return ONLY the JSON object
+- No explanatory text before or after
+- Ensure valid JSON syntax (proper quotes, commas, brackets)
+- Use double quotes for strings
+- Escape special characters if needed
+
+VERIFICATION CHECKLIST BEFORE RESPONDING:
+- [ ] Every field has either real data or "N/A"
+- [ ] No invented statistics or figures
+- [ ] Sources list contains actual URLs
+- [ ] JSON is valid and parseable
+- [ ] No additional commentary outside JSON
+
+Company to research: [INSERT COMPANY NAME HERE]"""
+
+
+async def _extract_company_via_gemini(company_name: str) -> dict:
+    """
+    Use Gemini to produce structured JSON based on web knowledge.
+    If your account has Google-grounded search enabled, Gemini will leverage it automatically.
+    """
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key")
+    if not gemini_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+
+    client = genai.Client(api_key=gemini_key)
+
+    instruction = _company_extraction_instruction()
+    prompt = (
+        f"{instruction}\n\n"
+        f'Query: "{company_name}" company overview, about, products, HQ, industry, employees, revenue, market share, competitors.\n'
+        f"Return ONLY the JSON."
+    )
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    ai_text = (response.text or "").strip()
+
+    # Clean JSON code fences if present
+    cleaned = ai_text
+    if "```json" in cleaned:
+        m = re.search(r'```json\s*\n?(.*?)\n?```', cleaned, re.DOTALL)
+        if m:
+            cleaned = m.group(1).strip()
+    elif "```" in cleaned:
+        m = re.search(r'```\s*\n?(.*?)\n?```', cleaned, re.DOTALL)
+        if m:
+            cleaned = m.group(1).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        parsed = {}
+
+    required = [
+        "Company name",
+        "Description/tagline",
+        "Products/services",
+        "Location/headquarters",
+        "Industry",
+        "Number of employees",
+        "Revenue",
+        "Market Share",
+        "Competitors",
+    ]
+    structured = {k: (str(parsed.get(k)) if parsed.get(k) not in [None, ""] else "N/A") for k in required}
+
+    return {
+        "structured_data": structured,
+        "raw_ai_response": ai_text,
+        "extraction_successful": bool(parsed),
+        "parsing_successful": bool(parsed),
+    }
 
 @app.get("/")
 async def root():
@@ -206,7 +327,6 @@ async def root():
     return {
         "message": "Simple OCR Server",
         "status": "running",
-        "tesseract_version": pytesseract.get_tesseract_version(),
         "whatsapp_webhook": "/api/v1/whatsapp/webhook"
     }
 
@@ -226,17 +346,13 @@ async def root_post(request: Request):
             return {"error": "Method Not Allowed - Use GET for root endpoint"}
     except Exception as e:
         return {"error": f"Invalid request: {str(e)}"}
-
-
-@app.get("/health")
+@app.get("/health") 
 async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "tesseract_available": True,
-        "tesseract_version": pytesseract.get_tesseract_version()
+        "timestamp": datetime.now().isoformat()
     }
-
 
 def enhance_image_for_ocr(cv_image):
     """Apply multiple image enhancement techniques for better OCR"""
@@ -246,6 +362,7 @@ def enhance_image_for_ocr(cv_image):
 def process_image_with_tesseract(image, cv_image):
     """Process image with Tesseract using multiple enhancement techniques"""
     return image_processing_service.process_image_with_tesseract(image, cv_image)
+    
 
 
 @app.post("/ocr")
@@ -793,243 +910,257 @@ async def comprehensive_business_card_analysis(file: UploadFile = File(...)):
 
 @app.post("/crawl-company")
 async def crawl_company(
-    company_name: str = Query(..., description="Company name to crawl from LinkedIn"),
-    use_ai_extraction: bool = Query(True, description="Whether to use AI for data extraction"),
-    platform: str = Query("linkedin", description="Platform to crawl (linkedin, website, etc.)")
+    company_name: str = Query(..., description="Company name to find"),
+    use_ai_extraction: bool = Query(True, description="Kept for compatibility; ignored"),
+    platform: str = Query("search", description="Deprecated. LLM search is always used.")
 ):
     """
-    Crawl company information using crawl4ai with AI-powered data extraction
-    
-    This endpoint:
-    1. Crawls LinkedIn company pages using crawl4ai
-    2. Extracts structured company data using Gemini AI
-    3. Respects rate limits to avoid being blocked
+    LLM-only company lookup (no crawl4ai):
+    - Uses Gemini to return strict JSON with required fields.
+    - Stores result in MongoDB.
     """
     try:
-        if not CRAWL4AI_AVAILABLE:
-            raise HTTPException(
-                status_code=503, 
-                detail="Crawl4AI not available. Install with: pip install crawl4ai google-generativeai"
-            )
-        
-        # Validate inputs
         if not company_name or not company_name.strip():
             raise HTTPException(status_code=400, detail="Company name is required")
-        
-        # Clean company name for URL generation
-        company_name_clean = company_name.strip().lower()
-        
-        logger.info(f"🔍 Starting company crawl", 
-                   company=company_name, 
-                   platform=platform,
-                   ai_extraction=use_ai_extraction)
-        
-        # Apply rate limiting
+
         await rate_limiter.wait_if_needed()
-        
-        start_time = time.time()
-        
-        # Construct URL based on platform
-        if platform.lower() == "linkedin":
-            # Handle company names with spaces for LinkedIn URLs
-            if " " in company_name_clean:
-                # Try both formats: with hyphens and without spaces
-                company_name_hyphen = company_name_clean.replace(" ", "-")
-                company_name_no_spaces = company_name_clean.replace(" ", "")
-                
-                # Try hyphenated version first (more common on LinkedIn)
-                url = f"https://www.linkedin.com/company/{company_name_hyphen}/"
-                logger.info(f"🌐 Using hyphenated LinkedIn URL: {url}")
-            else:
-                url = f"https://www.linkedin.com/company/{company_name_clean}/"
-            
-        elif platform.lower() == "website":
-            # Try common website patterns
-            url = f"https://www.{company_name}.com"
-        else:
-            url = company_name  # Assume it's already a full URL
-        
-        logger.info(f"🌐 Crawling URL: {url}")
-        
-        # Crawl the website
-        async with AsyncWebCrawler() as crawler:
-            result = await crawler.arun(url=url)
-            
-            elapsed = time.time() - start_time
-            logger.info(f"⏱️ Crawling completed in {elapsed:.1f} seconds")
-            
-            if not result.success:
-                logger.error(f"❌ Crawl unsuccessful for {url}")
-                return {
-                    "success": False,
-                    "error": "Failed to crawl the website",
-                    "url": url,
-                    "company_name": company_name,
-                    "crawl_time": elapsed
-                }
-            
-            # Extract content
-            markdown_content = result.markdown
-            logger.info(f"📄 Extracted {len(markdown_content)} characters of content")
-            
-            # AI-powered data extraction
-            extracted_data = None
-            if use_ai_extraction:
-                try:
-                    logger.info("🤖 Starting AI-powered data extraction...")
-                    
-                    # Check if Gemini API key is available
-                    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key")
-                    if not gemini_key:
-                        logger.warning("⚠️ Gemini API key not found, skipping AI extraction")
-                        extracted_data = {"error": "Gemini API key not configured"}
-                    else:
-                        # Use exact same format as crawling.py
-                        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-                        
-                        # Enhanced strategy for structured JSON output
-                        strategy = {
-                            "instruction": """Extract the following company information and return as a valid JSON object with these exact keys:
-                            {
-                                "Company name": "string",
-                                "Description/tagline": "string", 
-                                "Products/services": "string",
-                                "Location/headquarters": "string",
-                                "Industry": "string",
-                                "Number of employees": "string"
-                            }
-                            
-                            Rules:
-                            - Return ONLY valid JSON, no additional text
-                            - Use "N/A" if information is not available
-                            - For products/services, provide a brief summary
-                            - For number of employees, use ranges like "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+"
-                            - Be concise but informative"""
-                        }
-                        
-                        # Use exact same format as crawling.py
-                        response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=f"{strategy} {markdown_content}"
-                        )
-                        
-                        # Parse the AI response into structured JSON
-                        ai_response = response.text.strip()
-                        
-                        try:
-                            # Try to parse as JSON
-                            import json
-                            import re
-                            
-                            # Clean the response - remove markdown code blocks if present
-                            cleaned_response = ai_response
-                            if "```json" in cleaned_response:
-                                # Extract JSON from markdown code blocks
-                                json_match = re.search(r'```json\s*\n?(.*?)\n?```', cleaned_response, re.DOTALL)
-                                if json_match:
-                                    cleaned_response = json_match.group(1).strip()
-                            elif "```" in cleaned_response:
-                                # Handle generic code blocks
-                                json_match = re.search(r'```\s*\n?(.*?)\n?```', cleaned_response, re.DOTALL)
-                                if json_match:
-                                    cleaned_response = json_match.group(1).strip()
-                            
-                            parsed_data = json.loads(cleaned_response)
-                            
-                            # Validate and format the response
-                            formatted_data = {
-                                "Company name": parsed_data.get("Company name", "N/A"),
-                                "Description/tagline": parsed_data.get("Description/tagline", "N/A"),
-                                "Products/services": parsed_data.get("Products/services", "N/A"),
-                                "Location/headquarters": parsed_data.get("Location/headquarters", "N/A"),
-                                "Industry": parsed_data.get("Industry", "N/A"),
-                                "Number of employees": parsed_data.get("Number of employees", "N/A")
-                            }
-                            
-                            extracted_data = {
-                                "structured_data": formatted_data,
-                                "raw_ai_response": ai_response,
-                                "extraction_successful": True,
-                                "parsing_successful": True
-                            }
-                            
-                            logger.info("✅ AI extraction and JSON parsing completed")
-                            
-                        except json.JSONDecodeError as json_error:
-                            logger.warning(f"⚠️ Failed to parse AI response as JSON: {json_error}")
-                            # Fallback: return raw response with parsing error
-                            extracted_data = {
-                                "structured_data": None,
-                                "raw_ai_response": ai_response,
-                                "extraction_successful": True,
-                                "parsing_successful": False,
-                                "parsing_error": str(json_error)
-                            }
-                        
-                except Exception as ai_error:
-                    logger.error(f"❌ AI extraction failed: {ai_error}")
-                    extracted_data = {
-                        "error": str(ai_error),
-                        "extraction_successful": False,
-                        "parsing_successful": False
-                    }
-            
-            # Prepare response with structured company data
-            response_data = {
-                "success": True,
+        start = time.time()
+
+        extracted = await _extract_company_via_gemini(company_name.strip())
+        elapsed = time.time() - start
+
+        response_data = {
+            "success": True,
+            "company_name": company_name,
+            "url": None,
+            "platform": "gemini-search",
+            "crawl_time": elapsed,
+            "content_length": 0,
+            "company_data": extracted.get("structured_data"),
+            "raw_ai_response": extracted.get("raw_ai_response"),
+            "extraction_successful": extracted.get("extraction_successful", False),
+            "parsing_successful": extracted.get("parsing_successful", False),
+            "crawled_at": datetime.now().isoformat()
+        }
+
+        # Save to MongoDB as before
+        try:
+            from mongodb_service import mongodb_service
+            crawl_doc = {
                 "company_name": company_name,
-                "url": url,
-                "platform": platform,
+                "url": None,
+                "platform": "gemini-search",
+                "content": None,
+                "ai_extracted_data": extracted,
                 "crawl_time": elapsed,
-                "content_length": len(markdown_content),
-                "company_data": extracted_data.get("structured_data") if extracted_data else None,  # This will be your formatted JSON
-                "raw_ai_response": extracted_data.get("raw_ai_response") if extracted_data else None,
-                "extraction_successful": extracted_data.get("extraction_successful", False) if extracted_data else False,
-                "parsing_successful": extracted_data.get("parsing_successful", False) if extracted_data else False,
                 "crawled_at": datetime.now().isoformat()
             }
-            
-            # Save to MongoDB if available
-            try:
-                from mongodb_service import mongodb_service
-                
-                # Prepare data for saving
-                crawl_data = {
-                    "company_name": company_name,
-                    "url": url,
-                    "platform": platform,
-                    "content": markdown_content,
-                    "ai_extracted_data": extracted_data,
-                    "crawl_time": elapsed,
-                    "crawled_at": datetime.now().isoformat()
-                }
-                
-                # Save crawl data to MongoDB
-                saved_crawl = await mongodb_service.save_crawl_data(crawl_data)
-                if saved_crawl:
-                    logger.info(f"✅ Crawl data saved to MongoDB: {company_name}")
-                    response_data["saved_to_database"] = True
-                    response_data["database_type"] = "MongoDB"
-                else:
-                    logger.warning(f"⚠️ Failed to save crawl data to MongoDB")
-                    response_data["saved_to_database"] = False
-                    response_data["database_type"] = "MongoDB"
-                    
-            except Exception as db_error:
-                logger.warning(f"⚠️ MongoDB save failed: {db_error}")
-                response_data["saved_to_database"] = False
-                response_data["database_error"] = str(db_error)
-                response_data["database_type"] = "MongoDB"
-            
-            logger.info(f"✅ Company crawl completed successfully: {company_name}")
-            return response_data
-            
+            saved = await mongodb_service.save_crawl_data(crawl_doc)
+            response_data["saved_to_database"] = bool(saved)
+            response_data["database_type"] = "MongoDB"
+        except Exception as db_err:
+            logger.warning("⚠️ MongoDB save failed", err=str(db_err))
+            response_data["saved_to_database"] = False
+            response_data["database_error"] = str(db_err)
+            response_data["database_type"] = "MongoDB"
+
+        logger.info("✅ LLM company lookup completed", company=company_name)
+        return response_data
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Company crawl failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Company crawl failed: {str(e)}")
+        logger.error("❌ LLM company lookup failed", err=str(e))
+        raise HTTPException(status_code=500, detail=f"Company lookup failed: {str(e)}")
 
+
+@app.post("/crawl-website")
+async def crawl_website(
+    url: str = Query(..., description="Full URL of the website to crawl (include http/https)"),
+    use_ai_extraction: bool = Query(True, description="Whether to use AI for data extraction"),
+    extraction_profile: str = Query("generic", description="Extraction profile: generic | company | contact")
+):
+    """
+    Crawl any website URL using crawl4ai and optionally run AI-powered data extraction.
+
+    Returns:
+    - success, url, crawl_time, content_length
+    - markdown content length and optional AI-extracted structured data
+    - saves crawl to MongoDB if service is available
+    """
+    try:
+        if not url or not isinstance(url, str):
+            raise HTTPException(status_code=400, detail="Valid URL is required")
+
+        # Basic normalization
+        target_url = url.strip()
+        if not target_url.startswith(("http://", "https://")):
+            target_url = f"https://{target_url}"
+
+        logger.info("🔍 Starting website crawl", url=target_url, ai_extraction=use_ai_extraction, profile=extraction_profile)
+
+        # Rate limiting
+        await rate_limiter.wait_if_needed()
+
+        start_time = time.time()
+
+        # Ensure crawler availability
+        if not CRAWL4AI_AVAILABLE:
+            raise HTTPException(status_code=503, detail="Crawl4AI not available. Install with: pip install crawl4ai")
+
+        async with AsyncWebCrawler() as crawler:
+            result = await crawler.arun(url=target_url)
+
+        elapsed = time.time() - start_time
+        logger.info("⏱️ Website crawling completed", elapsed=f"{elapsed:.1f}s")
+
+        if not getattr(result, "success", False):
+            logger.error("❌ Crawl unsuccessful", url=target_url)
+            return {
+                "success": False,
+                "error": "Failed to crawl the website",
+                "url": target_url,
+                "crawl_time": elapsed
+            }
+
+        markdown_content = getattr(result, "markdown", "") or ""
+        logger.info("📄 Extracted content", characters=len(markdown_content))
+
+        # Optional AI extraction
+        extracted_data = None
+        if use_ai_extraction:
+            try:
+                gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key")
+                if not gemini_key:
+                    logger.warning("⚠️ Gemini API key not found, skipping AI extraction")
+                    extracted_data = {"error": "Gemini API key not configured"}
+                else:
+                    client = genai.Client(api_key=gemini_key)
+
+                    # Define profiles
+                    if extraction_profile.lower() == "company":
+                        instruction = """Extract company-focused information from the page and return ONLY valid JSON:
+                        {
+                          "Company name": "string",
+                          "Description/tagline": "string",
+                          "Products/services": "string",
+                          "Location/headquarters": "string",
+                          "Industry": "string",
+                          "Number of employees": "string"
+                        }
+                        Use "N/A" when unknown. Be concise.
+                        """
+                    elif extraction_profile.lower() == "contact":
+                        instruction = """Extract contact information and return ONLY valid JSON:
+                        {
+                          "Emails": ["string"],
+                          "Phones": ["string"],
+                          "Addresses": ["string"],
+                          "Social links": ["string"],
+                          "Contact page URLs": ["string"]
+                        }
+                        Return arrays (possibly empty). No extra text.
+                        """
+                    else:  # generic
+                        instruction = """Summarize page structure and contact details. Return ONLY valid JSON:
+                        {
+                          "Title": "string",
+                          "Description": "string",
+                          "Headings": ["string"],
+                          "Main topics": ["string"],
+                          "Emails": ["string"],
+                          "Phones": ["string"],
+                          "Social links": ["string"]
+                        }
+                        Use concise values; arrays may be empty. No extra text.
+                        """
+
+                    response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=f"{instruction}\n\n{markdown_content}"
+                    )
+
+                    ai_response = (response.text or "").strip()
+
+                    # Clean possible fenced code blocks
+                    cleaned = ai_response
+                    if "```json" in cleaned:
+                        m = re.search(r'```json\s*\n?(.*?)\n?```', cleaned, re.DOTALL)
+                        if m:
+                            cleaned = m.group(1).strip()
+                    elif "```" in cleaned:
+                        m = re.search(r'```\s*\n?(.*?)\n?```', cleaned, re.DOTALL)
+                        if m:
+                            cleaned = m.group(1).strip()
+
+                    try:
+                        parsed = json.loads(cleaned)
+                        extracted_data = {
+                            "structured_data": parsed,
+                            "raw_ai_response": ai_response,
+                            "extraction_successful": True,
+                            "parsing_successful": True
+                        }
+                    except json.JSONDecodeError as je:
+                        logger.warning("⚠️ Failed to parse AI response as JSON", err=str(je))
+                        extracted_data = {
+                            "structured_data": None,
+                            "raw_ai_response": ai_response,
+                            "extraction_successful": True,
+                            "parsing_successful": False,
+                            "parsing_error": str(je)
+                        }
+            except Exception as ai_err:
+                logger.error("❌ AI extraction failed", err=str(ai_err))
+                extracted_data = {
+                    "error": str(ai_err),
+                    "extraction_successful": False,
+                    "parsing_successful": False
+                }
+
+        response_data = {
+            "success": True,
+            "url": target_url,
+            "crawl_time": elapsed,
+            "content_length": len(markdown_content),
+            "content_preview": markdown_content[:5000],  # limit preview size
+            "extraction_profile": extraction_profile,
+            "extracted_data": extracted_data if use_ai_extraction else None,
+            "crawled_at": datetime.now().isoformat()
+        }
+
+        # Save to MongoDB if available
+        try:
+            if MONGODB_SERVICE_AVAILABLE:
+                from mongodb_service import mongodb_service
+                crawl_doc = {
+                    "url": target_url,
+                    "content": markdown_content,
+                    "ai_extracted_data": extracted_data,
+                    "extraction_profile": extraction_profile,
+                    "crawl_time": elapsed,
+                    "crawled_at": datetime.now().isoformat()
+                }
+                saved = await mongodb_service.save_crawl_data(crawl_doc)
+                response_data["saved_to_database"] = bool(saved)
+                response_data["database_type"] = "MongoDB"
+            else:
+                response_data["saved_to_database"] = False
+                response_data["database_type"] = "MongoDB"
+        except Exception as db_err:
+            logger.warning("⚠️ MongoDB save failed", err=str(db_err))
+            response_data["saved_to_database"] = False
+            response_data["database_error"] = str(db_err)
+            response_data["database_type"] = "MongoDB"
+
+        logger.info("✅ Website crawl completed successfully", url=target_url)
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("❌ Website crawl failed", err=str(e))
+        raise HTTPException(status_code=500, detail=f"Website crawl failed: {str(e)}")
 
 @app.post("/crawl-multiple-companies")
 async def crawl_multiple_companies(
@@ -1092,6 +1223,8 @@ async def crawl_multiple_companies(
     except Exception as e:
         logger.error(f"❌ Batch crawl failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Batch crawl failed: {str(e)}")
+
+# @app.post("/scrape-website-details")
 
 
 # WhatsApp webhook endpoint
