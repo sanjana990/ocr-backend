@@ -15,7 +15,7 @@ except ImportError:
     print("⚠️ python-dotenv not installed, using system environment variables")
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, Form, Response
-from typing import List, Dict, Any
+from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
 import cv2

@@ -6,7 +6,7 @@ Fetches additional details from QR code URLs for business card enhancement
 import asyncio
 import aiohttp
 import structlog
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 import re
 from urllib.parse import urlparse
 import json
