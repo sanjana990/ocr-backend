@@ -701,12 +701,22 @@ async def batch_ocr(files: List[UploadFile] = File(...)):
                 # Detect QR codes
                 qr_codes = detect_qr_codes(content)
                 
-                # Extract structured information if OCR was successful
+                # Extract structured information: prefer Vision pipeline, fallback to AI text-only
                 structured_info = None
-                if result.get("success") and result.get("text"):
-                    # Use AI-powered extraction instead of regex
-                    from app.services.ai_extraction_service import ai_extraction_service
-                    structured_info = await ai_extraction_service.extract_business_card_data(result.get("text", ""))
+                try:
+                    vision_card = await ocr_service.extract_business_card_data(content, use_vision=True)
+                    if vision_card.get("success"):
+                        structured_info = vision_card.get("data", {})
+                    else:
+                        # Fallback to AI extraction from OCR text
+                        if result.get("success") and result.get("text"):
+                            from app.services.ai_extraction_service import ai_extraction_service
+                            structured_info = await ai_extraction_service.extract_business_card_data(result.get("text", ""))
+                except Exception as ex:
+                    logger.warning("Structured extraction failed, using AI text-only fallback", error=str(ex))
+                    if result.get("success") and result.get("text"):
+                        from app.services.ai_extraction_service import ai_extraction_service
+                        structured_info = await ai_extraction_service.extract_business_card_data(result.get("text", ""))
                 
                 results.append({
                     "filename": file.filename,

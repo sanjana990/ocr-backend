@@ -591,28 +591,54 @@ class OCRService:
         return best_result
     
     async def extract_business_card_data(self, image_data: bytes, use_vision: bool = True) -> Dict[str, Any]:
-        """Extract structured data from business card using OCR and optionally vision analysis"""
+        """Extract structured data from business card using Gemini Vision (no OCR engines) + QR scan"""
         try:
-            # Process image with OCR
-            ocr_result = await self.process_image(image_data, engine='auto')
-            
-            # Scan for QR codes
+            parsed_data: Dict[str, Any] = {}
+
+            # 1) Vision first (Gemini 2.5 Flash) - Primary extraction method
+            self.logger.info(f"🔍 Vision-first business card extraction: use_vision={use_vision}, vision_available={self.vision_available}")
+            vision_result = None
+            if use_vision and self.vision_available:
+                try:
+                    self.logger.info("🔍 Running Gemini 2.5 Flash vision analysis for business card")
+                    vision_result = await self.vision_service.analyze_business_card(image_data)
+                    
+                    self.logger.info("🔍 Vision result received", 
+                                   success=vision_result.get("success"),
+                                   method=vision_result.get("method", "unknown"),
+                                   confidence=vision_result.get("confidence", 0))
+                    
+                    if vision_result.get("success"):
+                        # Extract contact info from vision analysis
+                        vision_contact = vision_result.get("structured_info", {}).get("contact_info", {})
+                        self.logger.info("🔍 Vision contact data", contact_fields=list(vision_contact.keys()))
+                        
+                        # Normalize keys to our schema and add to parsed_data
+                        for key, value in vision_contact.items():
+                            if value:  # Only use non-empty values
+                                parsed_data[key] = value
+                        
+                        self.logger.info("✅ Vision analysis completed", 
+                                       confidence=vision_result.get("confidence", 0),
+                                       fields_extracted=len([k for k, v in vision_contact.items() if v]))
+                    else:
+                        self.logger.warning("⚠️ Vision analysis failed", error=vision_result.get("error"))
+                        
+                except Exception as e:
+                    self.logger.error("❌ Vision analysis error", error=str(e))
+
+            # 2) QR scan and merge (QR data takes precedence over vision)
             qr_result = await self.scan_qr_codes(image_data)
-            
-            # Parse business card data from OCR
-            parsed_data = self._parse_business_card(ocr_result["text"]) if ocr_result["success"] else {}
-            
-            # Merge QR code data if found
-            if qr_result["success"] and qr_result.get("parsed_data"):
-                # Merge QR data with OCR data (QR data takes precedence)
+            if qr_result.get("success") and qr_result.get("parsed_data"):
+                # Merge QR data with vision data (QR data takes precedence)
                 for key, value in qr_result["parsed_data"].items():
                     if value:  # Only use non-empty values
                         parsed_data[key] = value
                 
-                self.logger.info("📱 QR code data merged with OCR data", 
+                self.logger.info("📱 QR code data merged with vision data", 
                                qr_fields=list(qr_result["parsed_data"].keys()))
-                
-                # If QR code contains URLs, fetch additional details
+
+                # 3) Optional URL enrichment from QR codes
                 urls_to_fetch = []
                 for qr in qr_result.get("qr_codes", []):
                     if qr.get("parsed", {}).get("type") == "url":
@@ -651,45 +677,14 @@ class OCRService:
                     
                     except Exception as e:
                         self.logger.warning("Failed to fetch URL details", error=str(e))
-            
-            # Use vision analysis if available and requested
-            vision_result = None
-            self.logger.info(f"🔍 Vision check: use_vision={use_vision}, vision_available={self.vision_available}")
-            if use_vision and self.vision_available:
-                try:
-                    self.logger.info("🔍 Running vision analysis for business card")
-                    vision_result = await self.vision_service.analyze_business_card(image_data)
-                    
-                    self.logger.info("🔍 Vision result received", 
-                                   success=vision_result.get("success"),
-                                   has_structured_info=bool(vision_result.get("structured_info")),
-                                   confidence=vision_result.get("confidence", 0))
-                    
-                    if vision_result.get("success"):
-                        # Merge vision data with OCR data (vision data takes precedence)
-                        vision_contact = vision_result.get("structured_info", {}).get("contact_info", {})
-                        self.logger.info("🔍 Vision contact data", contact_fields=list(vision_contact.keys()))
-                        
-                        for key, value in vision_contact.items():
-                            if value:  # Only use non-empty values
-                                parsed_data[key] = value
-                        
-                        self.logger.info("✅ Vision analysis completed", 
-                                       confidence=vision_result.get("confidence", 0),
-                                       fields_extracted=len([k for k, v in vision_contact.items() if v]))
-                    else:
-                        self.logger.warning("⚠️ Vision analysis failed", error=vision_result.get("error"))
-                        
-                except Exception as e:
-                    self.logger.error("❌ Vision analysis error", error=str(e))
-                    self.logger.error("❌ Vision analysis error details", error_type=type(e).__name__, error_message=str(e))
-            
+
+            # Build response
             return {
                 "success": True,
                 "data": parsed_data,
-                "confidence": ocr_result.get("confidence", 0.0),
-                "raw_text": ocr_result.get("text", ""),
-                "engine_used": ocr_result.get("engine", "unknown"),
+                "confidence": (vision_result or {}).get("confidence", 0.0),
+                "raw_text": "",  # Vision-only path focuses on structured fields
+                "engine_used": (vision_result or {}).get("method", "gemini_vision"),
                 "qr_codes": qr_result.get("qr_codes", []),
                 "qr_count": qr_result.get("count", 0),
                 "qr_parsed_data": qr_result.get("parsed_data", {}),

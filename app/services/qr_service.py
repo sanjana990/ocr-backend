@@ -41,38 +41,36 @@ class QRService:
             
             # Method 1: OpenCV QR detector with multiple preprocessing
             try:
-                # Try original image first
                 qr_detector = cv2.QRCodeDetector()
-                result = qr_detector.detectAndDecode(cv_image)
-                
-                # Handle different OpenCV versions
-                if len(result) == 3:
-                    retval, decoded_info, points = result
-                elif len(result) == 4:
-                    retval, decoded_info, points, _ = result
-                else:
-                    self.logger.warning(f"Unexpected OpenCV result format: {len(result)} values")
-                    retval, decoded_info, points = False, None, None
-                
-                # Check if we have valid detection results
-                has_valid_result = (
-                    isinstance(retval, (bool, np.bool_)) and bool(retval) and 
-                    decoded_info is not None and decoded_info != ""
-                )
-                
-                if has_valid_result:
-                    qr_info = {
-                        "data": decoded_info,
+                # Try multi decode first on original image
+                try:
+                    retval, decoded_list, points, _ = qr_detector.detectAndDecodeMulti(cv_image)
+                except Exception:
+                    retval, decoded_list, points = False, [], None
+                if retval and decoded_list:
+                    for s in decoded_list:
+                        if s:
+                            results.append({
+                                "data": s,
+                                "type": "QRCODE",
+                                "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+                                "method": "opencv_multi_original"
+                            })
+                    self.logger.info(f"📱 QR Codes detected (multi original): {len(results)}")
+                # Also try single decode on original
+                data, pts, _ = qr_detector.detectAndDecode(cv_image)
+                if data:
+                    results.append({
+                        "data": data,
                         "type": "QRCODE",
                         "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
-                        "method": "opencv_original"
-                    }
-                    results.append(qr_info)
-                    self.logger.info(f"📱 QR Code detected (OpenCV original): {decoded_info[:50]}...")
-                else:
-                    # Try with preprocessing if original fails
+                        "method": "opencv_single_original"
+                    })
+                    self.logger.info(f"📱 QR Code detected (single original): {data[:50]}...")
+
+                # If nothing found, try preprocessing variants
+                if not results:
                     gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-                    
                     preprocessing_methods = [
                         ("grayscale", gray),
                         ("gaussian", cv2.GaussianBlur(gray, (3, 3), 0)),
@@ -80,39 +78,37 @@ class QRService:
                         ("threshold", cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]),
                         ("adaptive", cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2))
                     ]
-                    
                     for method_name, processed_img in preprocessing_methods:
+                        # Multi
+                        found_any = False
                         try:
-                            result = qr_detector.detectAndDecode(processed_img)
-                            
-                            # Handle different OpenCV versions
-                            if len(result) == 3:
-                                retval, decoded_info, points = result
-                            elif len(result) == 4:
-                                retval, decoded_info, points, _ = result
-                            else:
-                                self.logger.warning(f"Unexpected OpenCV result format: {len(result)} values")
-                                retval, decoded_info, points = False, None, None
-                            
-                            # Check if we have valid detection results
-                            has_valid_result = (
-                                isinstance(retval, (bool, np.bool_)) and bool(retval) and 
-                                decoded_info is not None and decoded_info != ""
-                            )
-                            
-                            if has_valid_result:
-                                qr_info = {
-                                    "data": decoded_info,
-                                    "type": "QRCODE",
-                                    "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
-                                    "method": f"opencv_{method_name}"
-                                }
-                                results.append(qr_info)
-                                self.logger.info(f"📱 QR Code detected (OpenCV {method_name}): {decoded_info[:50]}...")
-                                break  # Stop after first successful detection
-                        except Exception as e:
-                            self.logger.warning(f"OpenCV {method_name} detection failed", error=str(e))
-                            
+                            retval, decoded_list, points, _ = qr_detector.detectAndDecodeMulti(processed_img)
+                        except Exception:
+                            retval, decoded_list = False, []
+                        if retval and decoded_list:
+                            for s in decoded_list:
+                                if s:
+                                    results.append({
+                                        "data": s,
+                                        "type": "QRCODE",
+                                        "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+                                        "method": f"opencv_multi_{method_name}"
+                                    })
+                                    found_any = True
+                            if found_any:
+                                self.logger.info(f"📱 QR Codes detected (multi {method_name}): {len(results)}")
+                                break
+                        # Single
+                        data, pts, _ = qr_detector.detectAndDecode(processed_img)
+                        if data:
+                            results.append({
+                                "data": data,
+                                "type": "QRCODE",
+                                "rect": {"x": 0, "y": 0, "width": 0, "height": 0},
+                                "method": f"opencv_single_{method_name}"
+                            })
+                            self.logger.info(f"📱 QR Code detected (single {method_name}): {data[:50]}...")
+                            break
             except Exception as e:
                 self.logger.warning("OpenCV QR detection failed", error=str(e))
             
