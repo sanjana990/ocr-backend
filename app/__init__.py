@@ -1,1 +1,0 @@
-# Visitor Intelligence Platform Backend
