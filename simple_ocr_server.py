@@ -49,6 +49,9 @@ from app.services.qr_service import QRService
 from app.services.business_card_service import BusinessCardService
 from app.services.image_processing_service import ImageProcessingService
 
+# Import standalone business card analyzer
+from standalone_business_card_analyzer import BusinessCardAnalyzer
+
 # Import Apollo.io service
 try:
     from apollo_service import apollo_service
@@ -155,6 +158,16 @@ qr_service = QRService()
 business_card_service = BusinessCardService()
 image_processing_service = ImageProcessingService()
 
+# Initialize standalone AI analyzer
+try:
+    ai_analyzer = BusinessCardAnalyzer()
+    AI_ANALYZER_AVAILABLE = True
+    print("✅ AI Business Card Analyzer available")
+except Exception as e:
+    AI_ANALYZER_AVAILABLE = False
+    print(f"⚠️ AI Business Card Analyzer not available: {e}")
+    print("Make sure OPENAI_API_KEY is set in environment variables")
+
 # Initialize rate limiter for crawl4ai
 rate_limiter = SimpleRateLimiter()
 
@@ -166,9 +179,6 @@ def detect_qr_codes(image_data: bytes) -> list:
 def parse_qr_content(qr_data: str) -> dict:
     """Parse QR code content and extract structured information"""
     return qr_service.parse_qr_content(qr_data)
-
-
-# QR parsing functions moved to QRService
 
 
 def extract_business_card_info(text: str) -> dict:
@@ -207,7 +217,20 @@ async def root():
         "message": "Simple OCR Server",
         "status": "running",
         "tesseract_version": pytesseract.get_tesseract_version(),
-        "whatsapp_webhook": "/api/v1/whatsapp/webhook"
+        "ai_analyzer_available": AI_ANALYZER_AVAILABLE,
+        "endpoints": {
+            "ocr": "/ocr",
+            "business_card": "/business-card",
+            "ai_business_card": "/ai-business-card",
+            "qr_scan": "/qr-scan",
+            "qr_scan_goqr": "/qr-scan-goqr",
+            "batch_ocr": "/batch-ocr",
+            "extract_url_content": "/extract-url-content",
+            "comprehensive_business_card_analysis": "/comprehensive-business-card-analysis",
+            "crawl_company": "/crawl-company",
+            "crawl_multiple_companies": "/crawl-multiple-companies",
+            "whatsapp_webhook": "/api/v1/whatsapp/webhook"
+        }
     }
 
 @app.post("/")
@@ -312,8 +335,11 @@ async def process_ocr(file: UploadFile = File(...)):
 
 
 @app.post("/business-card")
-async def process_business_card(file: UploadFile = File(...)):
-    """Process business card with OCR + Vision analysis"""
+async def process_business_card(
+    file: UploadFile = File(...), 
+    use_ai: bool = Query(False, description="Use AI Vision analysis instead of traditional OCR")
+):
+    """Process business card with OCR + Vision analysis or AI Vision analysis"""
     try:
         # Validate file type
         if not file.content_type.startswith('image/'):
@@ -324,10 +350,50 @@ async def process_business_card(file: UploadFile = File(...)):
         
         logger.info("🚀 Processing business card", 
                    filename=file.filename, 
-                   file_size=len(content))
+                   file_size=len(content),
+                   use_ai=use_ai)
         
-        # Process with enhanced business card extraction (OCR + Vision)
-        result = await ocr_service.extract_business_card_data(content, use_vision=True)
+        # Choose processing method
+        if use_ai and AI_ANALYZER_AVAILABLE:
+            # Use AI Vision analysis
+            logger.info("🤖 Using AI Vision analysis")
+            ai_result = ai_analyzer.analyze_business_card_from_bytes(content)
+            
+            if ai_result["success"]:
+                structured_info = ai_result.get("structured_info", {})
+                contact_info = structured_info.get("contact_info", {})
+                qr_codes = structured_info.get("qr_codes", [])
+                
+                result = {
+                    "success": True,
+                    "data": contact_info,
+                    "confidence": structured_info.get("confidence", 0.0),
+                    "raw_text": ai_result.get("raw_analysis", ""),
+                    "engine_used": "ai_vision",
+                    "qr_codes": qr_codes,
+                    "qr_count": len(qr_codes),
+                    "vision_analysis": structured_info,
+                    "vision_available": True
+                }
+            else:
+                result = {
+                    "success": False,
+                    "error": ai_result.get("error", "AI analysis failed"),
+                    "data": {},
+                    "confidence": 0.0,
+                    "raw_text": "",
+                    "engine_used": "ai_vision",
+                    "qr_codes": [],
+                    "qr_count": 0,
+                    "vision_analysis": {},
+                    "vision_available": False
+                }
+        else:
+            # Use traditional OCR + Vision
+            if use_ai and not AI_ANALYZER_AVAILABLE:
+                logger.warning("⚠️ AI analyzer not available, falling back to traditional OCR")
+            
+            result = await ocr_service.extract_business_card_data(content, use_vision=True)
         
         logger.info("✅ Business card processing completed", 
                    filename=file.filename, 
@@ -379,6 +445,95 @@ async def process_business_card(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error("❌ Business card processing failed", err=str(e))
+        return {
+            "success": False,
+            "error": str(e),
+            "structured_data": {},
+            "confidence": 0.0
+        }
+
+
+@app.post("/ai-business-card")
+async def process_ai_business_card(file: UploadFile = File(...)):
+    """Process business card using AI Vision analysis (OpenAI GPT-4o-mini)"""
+    try:
+        # Check if AI analyzer is available
+        if not AI_ANALYZER_AVAILABLE:
+            raise HTTPException(
+                status_code=503, 
+                detail="AI Business Card Analyzer not available. Please check OPENAI_API_KEY configuration."
+            )
+        
+        # Validate file type
+        if not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File must be an image")
+        
+        # Read file content
+        content = await file.read()
+        
+        logger.info("🤖 Processing business card with AI Vision", 
+                   filename=file.filename, 
+                   file_size=len(content))
+        
+        # Process with AI analyzer
+        result = ai_analyzer.analyze_business_card_from_bytes(content)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=f"AI analysis failed: {result.get('error', 'Unknown error')}")
+        
+        structured_info = result.get("structured_info", {})
+        contact_info = structured_info.get("contact_info", {})
+        qr_codes = structured_info.get("qr_codes", [])
+        
+        logger.info("✅ AI business card analysis completed", 
+                   filename=file.filename, 
+                   success=result["success"],
+                   confidence=structured_info.get("confidence", 0),
+                   qr_count=len(qr_codes))
+        
+        # Save to database if available
+        if result["success"] and MONGODB_SERVICE_AVAILABLE:
+            try:
+                # Prepare data for saving
+                card_data = {
+                    **contact_info,
+                    "raw_analysis": result.get("raw_analysis", ""),
+                    "confidence": structured_info.get("confidence", 0.0),
+                    "method": "ai_vision",
+                    "qr_codes": qr_codes,
+                    "qr_count": len(qr_codes),
+                    "extracted_at": datetime.now().isoformat()
+                }
+                
+                # Save to MongoDB
+                saved_card = await mongodb_service.save_business_card_data(card_data)
+                if saved_card:
+                    logger.info(f"✅ AI business card data saved to MongoDB: {contact_info.get('name', 'Unknown')}")
+                else:
+                    logger.warning(f"⚠️ Failed to save AI business card data to MongoDB")
+                    
+            except Exception as db_error:
+                logger.warning(f"⚠️ MongoDB save failed: {db_error}")
+                # Continue with response even if database save fails
+        
+        return {
+            "success": result["success"],
+            "filename": file.filename,
+            "method": "ai_vision",
+            "structured_data": contact_info,
+            "confidence": structured_info.get("confidence", 0.0),
+            "qr_codes": qr_codes,
+            "qr_count": len(qr_codes),
+            "formatted_output": ai_analyzer.format_output(result),
+            "raw_analysis": result.get("raw_analysis", ""),
+            "additional_info": structured_info.get("additional_info", {}),
+            "error": result.get("error")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("❌ AI business card processing failed", err=str(e))
         return {
             "success": False,
             "error": str(e),

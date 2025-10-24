@@ -166,6 +166,7 @@ class MongoDBService:
                 "url": crawl_data.get("url", ""),
                 "platform": crawl_data.get("platform", ""),
                 "content": crawl_data.get("content", ""),
+                "company_details": crawl_data.get("company_details", {}),
                 "ai_extracted_data": crawl_data.get("ai_extracted_data", {}),
                 "crawl_time": crawl_data.get("crawl_time", 0),
                 "crawled_at": crawl_data.get("crawled_at", datetime.now().isoformat()),
