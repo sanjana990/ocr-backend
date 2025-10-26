@@ -40,14 +40,11 @@ except ImportError as e:
     DATABASE_SERVICE_AVAILABLE = False
     print(f"⚠️ Database service not available: {e}")
 
-# Import MongoDB service
+# Import MongoDB service (DEPRECATED - will be removed)
 try:
     from mongodb_service import mongodb_service
-    MONGODB_SERVICE_AVAILABLE = mongodb_service.available
-    if MONGODB_SERVICE_AVAILABLE:
-        print("✅ MongoDB service available")
-    else:
-        print("⚠️ MongoDB service not configured (MONGODB_URL not set)")
+    MONGODB_SERVICE_AVAILABLE = False  # Disabled - using Supabase instead
+    print("⚠️ MongoDB service imported but disabled - using Supabase instead")
 except ImportError as e:
     MONGODB_SERVICE_AVAILABLE = False
     print(f"⚠️ MongoDB service not available: {e}")
@@ -360,55 +357,68 @@ async def process_ai_business_card(file: UploadFile = File(...)):
                     "extracted_at": datetime.now().isoformat()
                 }
                 
-                # Save to Supabase
-                saved_card = await database_service.save_business_card_data(card_data)
+                # Save to Supabase with image data
+                saved_card = await database_service.save_business_card_data(
+                    card_data, 
+                    image_data=content,
+                    image_filename=file.filename,
+                    image_content_type=file.content_type
+                )
                 if saved_card:
                     logger.info(f"✅ AI business card data saved to Supabase: {contact_info.get('name', 'Unknown')}")
                     saved_to_database = True
                     
                     # Automatically trigger company research if company name is available
                     company_name = contact_info.get('company')
-                    if company_name and MONGODB_SERVICE_AVAILABLE and GEMINI_AVAILABLE:
+                    logger.info(f"🔍 Company research check: company_name='{company_name}', DATABASE_SERVICE_AVAILABLE={DATABASE_SERVICE_AVAILABLE}, GEMINI_AVAILABLE={GEMINI_AVAILABLE}")
+                    
+                    if company_name and DATABASE_SERVICE_AVAILABLE and GEMINI_AVAILABLE:
                         try:
                             logger.info(f"🏢 Auto-triggering company research for: {company_name}")
                             
-                            # Apply rate limiting
-                            await rate_limiter.wait_if_needed()
-                            start_time = time.time()
-                            
-                            # Research company using Gemini
-                            extracted = await _extract_company_via_gemini(company_name.strip())
-                            elapsed = time.time() - start_time
-                            
-                            # Prepare company data for MongoDB
-                            company_research_data = {
-                                "company_name": company_name,
-                                "url": None,
-                                "platform": "gemini-search",
-                                "content": None,
-                                "ai_extracted_data": extracted,
-                                "crawl_time": elapsed,
-                                "crawled_at": datetime.now().isoformat(),
-                                "company_details":card_data,
-                                "triggered_by": "business_card_auto_research",
-                                "business_card_id": saved_card.get('id') if isinstance(saved_card, dict) else None
-                            }
-                            
-                            # Save company research to MongoDB
-                            saved_company = await mongodb_service.save_crawl_data(company_research_data)
-                            if saved_company:
-                                logger.info(f"✅ Auto company research completed and saved to MongoDB: {company_name}")
+                            # Check if company already exists
+                            existing_company = await database_service.get_company_by_name(company_name)
+                            if existing_company:
+                                logger.info(f"✅ Company already exists in database: {company_name}")
                             else:
-                                logger.warning(f"⚠️ Auto company research failed to save to MongoDB: {company_name}")
+                                # Apply rate limiting
+                                await rate_limiter.wait_if_needed()
+                                start_time = time.time()
                                 
+                                # Research company using Gemini
+                                extracted = await _extract_company_via_gemini(company_name.strip())
+                                elapsed = time.time() - start_time
+                                
+                                # Prepare company data for Supabase
+                                structured_data = extracted.get("structured_data", {})
+                                company_research_data = {
+                                    "company_name": company_name,
+                                    "description": structured_data.get("Description/tagline"),
+                                    "products": structured_data.get("Products/services"),
+                                    "location": structured_data.get("Location/headquarters"),
+                                    "industry": structured_data.get("Industry"),
+                                    "num_of_emp": structured_data.get("Number of employees"),
+                                    "revenue": structured_data.get("Revenue"),
+                                    "market_share": structured_data.get("Market Share")
+                                }
+                                
+                                # Save company research to Supabase
+                                saved_company = await database_service.save_company_data(company_research_data)
+                                if saved_company:
+                                    logger.info(f"✅ Auto company research completed and saved to Supabase: {company_name}")
+                                else:
+                                    logger.warning(f"⚠️ Auto company research failed to save to Supabase: {company_name}")
+                                    
                         except Exception as research_error:
                             logger.warning(f"⚠️ Auto company research failed: {research_error}")
-                    elif company_name and not MONGODB_SERVICE_AVAILABLE:
-                        logger.warning(f"⚠️ MongoDB not available for auto company research: {company_name}")
+                    elif company_name and not DATABASE_SERVICE_AVAILABLE:
+                        logger.warning(f"⚠️ Database not available for auto company research: {company_name}")
                     elif company_name and not GEMINI_AVAILABLE:
                         logger.warning(f"⚠️ Gemini not available for auto company research: {company_name}")
                     elif not company_name:
                         logger.info("ℹ️ No company name found in business card, skipping auto research")
+                    else:
+                        logger.warning(f"⚠️ Unknown condition preventing company research: company_name='{company_name}', DATABASE_SERVICE_AVAILABLE={DATABASE_SERVICE_AVAILABLE}, GEMINI_AVAILABLE={GEMINI_AVAILABLE}")
                 else:
                     logger.warning(f"⚠️ Failed to save AI business card data to Supabase")
                     
@@ -452,7 +462,6 @@ async def crawl_company(
     """
     LLM-only company lookup (no crawl4ai):
     - Uses Gemini to return strict JSON with required fields.
-    - Stores result in Supabase.
     """
     try:
         if not GEMINI_AVAILABLE:
@@ -484,40 +493,42 @@ async def crawl_company(
             "crawled_at": datetime.now().isoformat()
         }
  
-        # Save to MongoDB if available
-        if MONGODB_SERVICE_AVAILABLE:
+        # Save to Supabase if available
+        if DATABASE_SERVICE_AVAILABLE:
             try:
-                # Prepare data for saving to MongoDB
+                # Prepare data for saving to Supabase
+                structured_data = extracted.get("structured_data", {})
                 company_data = {
                     "company_name": company_name,
-                    "url": None,
-                    "platform": "gemini-search",
-                    "content": None,
-                    "ai_extracted_data": extracted,                   
-                    "crawl_time": elapsed,
-                    "crawled_at": datetime.now().isoformat()
+                    "description": structured_data.get("Description/tagline"),
+                    "products": structured_data.get("Products/services"),
+                    "location": structured_data.get("Location/headquarters"),
+                    "industry": structured_data.get("Industry"),
+                    "num_of_emp": structured_data.get("Number of employees"),
+                    "revenue": structured_data.get("Revenue"),
+                    "market_share": structured_data.get("Market Share")
                 }
                 
-                # Save to MongoDB using the MongoDB service
-                saved_company = await mongodb_service.save_crawl_data(company_data)
+                # Save to Supabase using the database service
+                saved_company = await database_service.save_company_data(company_data)
                 if saved_company:
-                    logger.info(f"✅ Company data saved to MongoDB: {company_name}")
+                    logger.info(f"✅ Company data saved to Supabase: {company_name}")
                     response_data["saved_to_database"] = True
-                    response_data["database_type"] = "MongoDB"
+                    response_data["database_type"] = "Supabase"
                 else:
-                    logger.warning(f"⚠️ Failed to save company data to MongoDB")
+                    logger.warning(f"⚠️ Failed to save company data to Supabase")
                     response_data["saved_to_database"] = False
-                    response_data["database_type"] = "MongoDB"
+                    response_data["database_type"] = "Supabase"
                     
             except Exception as db_err:
-                logger.warning("⚠️ MongoDB save failed", err=str(db_err))
+                logger.warning("⚠️ Supabase save failed", err=str(db_err))
                 response_data["saved_to_database"] = False
                 response_data["database_error"] = str(db_err)
-                response_data["database_type"] = "MongoDB"
+                response_data["database_type"] = "Supabase"
         else:
             response_data["saved_to_database"] = False
-            response_data["database_type"] = "MongoDB"
-            logger.warning("⚠️ MongoDB not available, skipping data storage")
+            response_data["database_type"] = "Supabase"
+            logger.warning("⚠️ Supabase not available, skipping data storage")
  
         logger.info("✅ LLM company lookup completed", company=company_name)
         return response_data

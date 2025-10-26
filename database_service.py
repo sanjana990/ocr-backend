@@ -28,12 +28,15 @@ class DatabaseService:
             self.available = True
             print("✅ Database service initialized with Supabase")
     
-    async def save_business_card_data(self, card_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def save_business_card_data(self, card_data: Dict[str, Any], image_data: Optional[bytes] = None, image_filename: Optional[str] = None, image_content_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Save business card OCR data to Supabase
+        Save business card OCR data to Supabase with image stored in Supabase Storage
         
         Args:
             card_data: Dictionary containing business card information
+            image_data: Optional binary image data
+            image_filename: Optional original filename
+            image_content_type: Optional MIME type
             
         Returns:
             Saved data or None if failed
@@ -43,26 +46,56 @@ class DatabaseService:
             return None
         
         try:
+            image_url = None
+            
+            # Upload image to Supabase Storage if provided
+            if image_data and image_filename:
+                try:
+                    # Generate unique filename
+                    import uuid
+                    import time
+                    file_extension = image_filename.split('.')[-1] if '.' in image_filename else 'jpg'
+                    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+                    
+                    # Upload to Supabase Storage
+                    storage_url = f"{self.supabase_url}/storage/v1/object/business-card-images/scanned-cards/{unique_filename}"
+                    
+                    headers = {
+                        "Authorization": f"Bearer {self.supabase_key}",
+                        "Content-Type": image_content_type or "image/jpeg"
+                    }
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(storage_url, data=image_data, headers=headers) as response:
+                            if response.status == 200:
+                                # Get public URL
+                                image_url = f"{self.supabase_url}/storage/v1/object/public/business-card-images/scanned-cards/{unique_filename}"
+                                print(f"✅ Image uploaded to Supabase Storage: {unique_filename}")
+                            else:
+                                error_text = await response.text()
+                                print(f"❌ Failed to upload image: {response.status} - {error_text}")
+                                
+                except Exception as e:
+                    print(f"❌ Image upload error: {e}")
+            
             # Prepare data for Supabase
             supabase_data = {
                 "name": card_data.get("name", ""),
                 "title": card_data.get("title"),
+                "phone": card_data.get("phone"),
                 "company": card_data.get("company"),
                 "email": card_data.get("email"),
-                "phone": card_data.get("phone"),
-                "address": card_data.get("address"),
                 "website": card_data.get("website"),
-                "raw_text": card_data.get("raw_text"),
-                "confidence": card_data.get("confidence", 0.0),
-                "engine_used": card_data.get("engine_used"),
-                "qr_codes": card_data.get("qr_codes", []),
-                "qr_count": card_data.get("qr_count", 0),
-                "extracted_at": card_data.get("extracted_at", datetime.now().isoformat())
+                "address": card_data.get("address"),
+                "social_media": json.dumps(card_data.get("social_media", {})),
+                "qr_codes": json.dumps(card_data.get("qr_codes", [])),
+                "additional_info": json.dumps(card_data.get("additional_info", {})),
+                "image": image_url  # Store URL instead of base64
             }
             
             # Make API call to Supabase
             async with aiohttp.ClientSession() as session:
-                url = f"{self.supabase_url}/rest/v1/business_cards"
+                url = f"{self.supabase_url}/rest/v1/scanned_cards"
                 headers = {
                     "apikey": self.supabase_key,
                     "Authorization": f"Bearer {self.supabase_key}",
@@ -73,11 +106,11 @@ class DatabaseService:
                 async with session.post(url, json=supabase_data, headers=headers) as response:
                     if response.status == 201:
                         result = await response.json()
-                        print(f"✅ Business card data saved to database: {card_data.get('name')}")
+                        print(f"✅ Scanned card data saved to database: {card_data.get('name')}")
                         return result[0] if result else None
                     else:
                         error_text = await response.text()
-                        print(f"❌ Failed to save business card: {response.status} - {error_text}")
+                        print(f"❌ Failed to save scanned card: {response.status} - {error_text}")
                         return None
                         
         except Exception as e:
@@ -160,12 +193,12 @@ class DatabaseService:
             print(f"❌ Database fetch error: {e}")
             return None
 
-    async def save_crawl_data(self, crawl_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def save_company_data(self, company_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Save crawl data to Supabase
+        Save enriched company data to Supabase
         
         Args:
-            crawl_data: Dictionary containing crawl information
+            company_data: Dictionary containing company information
             
         Returns:
             Saved data or None if failed
@@ -177,18 +210,18 @@ class DatabaseService:
         try:
             # Prepare data for Supabase
             supabase_data = {
-                "company_name": crawl_data.get("company_name", ""),
-                "url": crawl_data.get("url", ""),
-                "platform": crawl_data.get("platform", ""),
-                "content": crawl_data.get("content", ""),
-                "ai_extracted_data": json.dumps(crawl_data.get("ai_extracted_data", {})),
-                "crawl_time": crawl_data.get("crawl_time", 0),
-                "crawled_at": crawl_data.get("crawled_at", datetime.now().isoformat()),
-                "created_at": datetime.now().isoformat()
+                "company_name": company_data.get("company_name", ""),
+                "description": company_data.get("description"),
+                "products": company_data.get("products"),
+                "location": company_data.get("location"),
+                "industry": company_data.get("industry"),
+                "num_of_emp": company_data.get("num_of_emp"),
+                "revenue": company_data.get("revenue"),
+                "market_share": company_data.get("market_share")
             }
             
             # Insert into Supabase
-            url = f"{self.supabase_url}/rest/v1/crawl_data"
+            url = f"{self.supabase_url}/rest/v1/company_enrichment"
             headers = {
                 "apikey": self.supabase_key,
                 "Authorization": f"Bearer {self.supabase_key}",
@@ -200,16 +233,121 @@ class DatabaseService:
                 async with session.post(url, headers=headers, json=supabase_data) as response:
                     if response.status in [200, 201]:
                         result = await response.json()
-                        print(f"✅ Crawl data saved to Supabase: {crawl_data.get('company_name')}")
+                        print(f"✅ Company data saved to Supabase: {company_data.get('company_name')}")
                         return result[0] if result else None
                     else:
                         error_text = await response.text()
-                        print(f"❌ Failed to save crawl data: {response.status} - {error_text}")
+                        print(f"❌ Failed to save company data: {response.status} - {error_text}")
                         return None
                         
         except Exception as e:
             print(f"❌ Database save error: {e}")
             return None
+
+    async def get_company_by_name(self, company_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get company data by name from Supabase
+        
+        Args:
+            company_name: Name of the company to search for
+            
+        Returns:
+            Company data or None if not found
+        """
+        if not self.available:
+            return None
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.supabase_url}/rest/v1/company_enrichment"
+                headers = {
+                    "apikey": self.supabase_key,
+                    "Authorization": f"Bearer {self.supabase_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                # Search for company by name (case insensitive)
+                params = {
+                    "company_name": f"ilike.{company_name}"
+                }
+                
+                async with session.get(url, headers=headers, params=params) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result[0] if result else None
+                    else:
+                        print(f"❌ Failed to fetch company: {response.status}")
+                        return None
+                        
+        except Exception as e:
+            print(f"❌ Database fetch error: {e}")
+            return None
+
+    async def save_crawl_data(self, crawl_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Save crawl data to Supabase (legacy method for backward compatibility)
+        
+        Args:
+            crawl_data: Dictionary containing crawl information
+            
+        Returns:
+            Saved data or None if failed
+        """
+        # Convert crawl_data to company_data format and save
+        company_data = {
+            "company_name": crawl_data.get("company_name", ""),
+            "description": crawl_data.get("description"),
+            "products": crawl_data.get("products"),
+            "location": crawl_data.get("location"),
+            "industry": crawl_data.get("industry"),
+            "num_of_emp": crawl_data.get("num_of_emp"),
+            "revenue": crawl_data.get("revenue"),
+            "market_share": crawl_data.get("market_share")
+        }
+        
+        return await self.save_company_data(company_data)
+    
+    async def delete_image_from_storage(self, image_url: str) -> bool:
+        """
+        Delete an image from Supabase Storage
+        
+        Args:
+            image_url: The public URL of the image to delete
+            
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        if not self.available or not image_url:
+            return False
+        
+        try:
+            # Extract filename from URL
+            # URL format: https://project.supabase.co/storage/v1/object/public/business-card-images/scanned-cards/filename.jpg
+            if "/business-card-images/scanned-cards/" in image_url:
+                filename = image_url.split("/business-card-images/scanned-cards/")[-1]
+                
+                # Delete from Supabase Storage
+                storage_url = f"{self.supabase_url}/storage/v1/object/business-card-images/scanned-cards/{filename}"
+                headers = {
+                    "Authorization": f"Bearer {self.supabase_key}"
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.delete(storage_url, headers=headers) as response:
+                        if response.status == 200:
+                            print(f"✅ Image deleted from storage: {filename}")
+                            return True
+                        else:
+                            error_text = await response.text()
+                            print(f"❌ Failed to delete image: {response.status} - {error_text}")
+                            return False
+            else:
+                print(f"❌ Invalid image URL format: {image_url}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Image deletion error: {e}")
+            return False
 
 # Global instance
 database_service = DatabaseService()

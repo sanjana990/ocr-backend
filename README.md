@@ -1,15 +1,16 @@
 # OCR Business Card Processing Platform - Backend
 
-AI-driven business card processing platform with company data enrichment using Apollo.io.
+AI-driven business card processing platform with company data enrichment using Gemini AI.
 
 ## Features
 
 - **FastAPI** - Modern, fast web framework
 - **OCR Integration** - Text extraction from business cards (Tesseract, EasyOCR)
 - **QR Code Detection** - Extract contact info from QR codes
-- **Apollo.io Integration** - Company data enrichment (replaces LinkedIn scraping)
+- **Gemini AI Integration** - Company data enrichment using Google's Gemini AI
 - **Company Research** - Automated data enrichment
 - **Database Storage** - Supabase integration for data persistence
+- **Image Storage** - Supabase Storage for efficient business card image handling
 
 ## Project Structure
 
@@ -48,25 +49,59 @@ cp env.example .env
 # Set database URLs, API keys, etc.
 ```
 
-### 3. Apollo.io Configuration
+### 3. Gemini AI Configuration
 
 ```bash
-# Get your Apollo.io API key from https://app.apollo.io/
+# Get your Gemini API key from https://aistudio.google.com/app/apikey
 # Add to .env file:
-APOLLO_API_KEY=your_apollo_api_key_here
-
-# Optional: Scrapfly for LinkedIn fallback
-SCRAPFLY_API_KEY=your_scrapfly_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-### 3. Database Setup
+### 3. Database Setup (Supabase)
 
 ```bash
-# Create database (PostgreSQL)
-createdb visitor_intelligence
+# 1. Create Supabase project at https://supabase.com
+# 2. Create required tables in Supabase SQL Editor:
 
-# Run migrations (when implemented)
-alembic upgrade head
+-- Create scanned_cards table
+CREATE TABLE scanned_cards (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    title TEXT,
+    phone TEXT,
+    company TEXT,
+    email TEXT,
+    website TEXT,
+    address TEXT,
+    social_media JSONB,
+    qr_codes JSONB,
+    additional_info JSONB,
+    image TEXT, -- Stores Supabase Storage URL
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Create company_enrichment table
+CREATE TABLE company_enrichment (
+    id SERIAL PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    description TEXT,
+    products TEXT,
+    location TEXT,
+    industry TEXT,
+    num_of_emp TEXT,
+    revenue TEXT,
+    market_share TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Disable RLS for easier API access
+ALTER TABLE scanned_cards DISABLE ROW LEVEL SECURITY;
+ALTER TABLE company_enrichment DISABLE ROW LEVEL SECURITY;
+
+# 3. Create Storage bucket for business card images:
+# - Go to Storage → Buckets → New bucket
+# - Name: business_card_images
+# - Make it Public for direct URL access
 ```
 
 ### 4. Start Services
@@ -91,8 +126,8 @@ python run.py
 - `POST /batch-ocr` - Process multiple images
 - `POST /qr-scan` - Scan QR codes in images
 
-### Company Data Enrichment (Apollo.io)
-- `POST /search-company` - Search company information using Apollo.io
+### Company Data Enrichment (Gemini AI)
+- `POST /crawl-company` - Research company information using Gemini AI
 - `POST /search-companies` - Search multiple companies
 - `POST /search-company-contacts` - Get contacts at a company
 
@@ -102,6 +137,20 @@ python run.py
 ### Health & Debug
 - `GET /health` - Health check
 - `GET /debug-qr` - Debug QR code detection
+
+## Testing Storage Functionality
+
+Test the new Supabase Storage implementation:
+
+```bash
+# Run the storage test script
+python test_storage.py
+```
+
+This will:
+1. Upload a test image to Supabase Storage
+2. Save business card data with the image URL
+3. Test image deletion functionality
 
 ## Development
 
