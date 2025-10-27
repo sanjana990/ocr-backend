@@ -348,6 +348,27 @@ class DatabaseService:
         except Exception as e:
             print(f"❌ Image deletion error: {e}")
             return False
+    
+    async def get_scanned_cards(self) -> Optional[list]:
+        """
+        Fetch all records from the 'scanned_cards' table in the 'research-tables' database.
+        """
+        url = f"{self.supabase_url}/rest/v1/scanned_cards"
+        headers = {
+                "apikey": self.supabase_key,
+                "Authorization": f"Bearer {self.supabase_key}",
+                "Content-Type": "application/json",
+            }
 
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    print("✅ Retrieved scanned cards:")
+                    return data
+                else:
+                    error_text = await response.text()
+                    print(f"❌ Failed to fetch scanned cards: {response.status} - {error_text}")
+                    return None
 # Global instance
 database_service = DatabaseService()

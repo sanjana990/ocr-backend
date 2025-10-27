@@ -539,6 +539,17 @@ async def crawl_company(
         logger.error("❌ LLM company lookup failed", err=str(e))
         raise HTTPException(status_code=500, detail=f"Company lookup failed: {str(e)}")
 
+@app.get('/scanned-cards', summary="Fetch all scanned cards")
+async def get_scanned_cards():
+    if not DATABASE_SERVICE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database service not available")
+
+    scanned_cards = await database_service.get_scanned_cards()
+    if scanned_cards is not None:
+        return {"success": True, "data": scanned_cards}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to fetch scanned cards")
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting Clean OCR Server...")
